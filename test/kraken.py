@@ -97,6 +97,57 @@ class PixelMap():
         )
 
 
+class SpatialGraph():
+
+    def __init__(self, df, n_neighbors=10) -> None:
+
+        self.df = df
+        self.n_neighbors = n_neighbors
+        self._neighbors = None
+        self._neighbor_types = None
+        self._distances = None
+
+    @property
+    def neighbors(self):
+        if self._neighbors is None:
+            self._distances, self._neighbors, self._neighbor_types = self.update_knn(
+                self.n_neighbors)
+        return self._neighbors
+
+    @property
+    def distances(self):
+        if self._distances is None:
+            self._distances, self._neighbors, self._neighbor_types = self.update_knn(
+                self.n_neighbors)
+        return self._distances
+
+    @property
+    def neighbor_types(self):
+        if self._neighbor_types is None:
+            self._distances, self._neighbors, self._neighbor_types = self.update_knn(
+                self.n_neighbors)
+        return self._neighbor_types
+
+    def update_knn(self, n_neighbors, re_run=False):
+
+        if self._neighbors is not None and n_neighbors < self._neighbors.shape[1]:
+            return (self._neighbors[:, n_neighbors], 
+                    self._distances[:, n_neighbors], 
+                    self._neighbor_types[:, n_neighbors])
+        else:
+            
+
+            coordinates = np.stack([self.df.X, self.df.Y]).T
+            knn = NearestNeighbors(n_neighbors=n_neighbors)
+            knn.fit(coordinates)
+            distances, neighbors = knn.kneighbors(coordinates)
+            neighbor_types = np.array(self.df.gene_ids)[neighbors]
+
+            self.n_neighbors = n_neighbors
+
+            return distances, neighbors, neighbor_types
+
+
 class SpatialIndexer():
 
     def __init__(self, df):
@@ -176,6 +227,8 @@ class SpatialData(pd.DataFrame):
         self._metadata = ['uns', 'stats', 'pixel_maps']
         self.uns = {'background': None}
         self.pixel_maps = []
+
+        self.graph = SpatialGraph(self)
 
         for pm in pixel_maps:
             if not type(pm) == PixelMap:
@@ -282,10 +335,12 @@ class SpatialData(pd.DataFrame):
 
         self['gene_id'] = inverse
 
-        if 'knn_distances' in self.uns:
-            del self.uns['knn_distances']
-        if 'knn_indices' in self.uns:
-            del self.uns['knn_indices']
+        self.graph = SpatialGraph(self)
+
+        # if 'knn_distances' in self.uns:
+        #     del self.uns['knn_distances']
+        # if 'knn_indices' in self.uns:
+        #     del self.uns['knn_indices']
 
     def get_count(self, gene):
         if gene in self.gene_classes.values:
@@ -298,25 +353,27 @@ class SpatialData(pd.DataFrame):
         if gene in self.gene_classes.values:
             return int(self.stats.count_ranks[self.gene_classes == gene])
 
-    def knn(self, n_neighbors=4, re_run=False):
+    # def knn(self, n_neighbors=4, re_run=False):
 
-        if not all(
-            (k in self.uns for k in ['knn_distances', 'knn_indices'])) or (
-                n_neighbors > self.uns['knn_distances'].shape[1]) or re_run:
-            knn = NearestNeighbors(n_neighbors=n_neighbors)
-            coordinates = np.stack([self.X, self.Y]).T
-            knn.fit(coordinates)
-            distances, indices = knn.kneighbors(coordinates)
-            self.uns['knn_distances'] = distances
-            self.uns['knn_indices'] = indices
-            self.uns['knn_types'] = np.array(self.gene_ids)[indices]
+    #     if not all(
+    #         (k in self.uns for k in ['knn_distances', 'knn_indices'])) or (
+    #             n_neighbors > self.uns['knn_distances'].shape[1]) or re_run:
+    #         knn = NearestNeighbors(n_neighbors=n_neighbors)
+    #         coordinates = np.stack([self.X, self.Y]).T
+    #         knn.fit(coordinates)
+    #         distances, indices = knn.kneighbors(coordinates)
+    #         self.uns['knn_distances'] = distances
+    #         self.uns['knn_indices'] = indices
+    #         self.uns['knn_types'] = np.array(self.gene_ids)[indices]
 
-        return self.uns['knn_distances'], self.uns['knn_indices'], self.uns[
-            'knn_types']
+    #     return self.uns['knn_distances'], self.uns['knn_indices'], self.uns[
+    #         'knn_types']
 
     def knn_entropy(self, n_neighbors=4):
 
-        _, indices, _ = self.knn(n_neighbors=n_neighbors)
+        # _, indices, _ = self.knn(n_neighbors=n_neighbors)
+        self.graph.update_knn(n_neighbors=n_neighbors)
+        indices = self.graph.neighbors#(n_neighbors=n_neighbors)
 
         knn_cells = np.zeros_like(indices)
         for i in range(indices.shape[1]):
@@ -478,7 +535,7 @@ class SpatialData(pd.DataFrame):
                                    self.Y[self['gene_id'] == idx],
                                    color=colors[i],
                                    marker='.')
-                                   
+
             axd[plot_name].set_xticks([], [])
             # if i>0:
             axd[plot_name].set_yticks([], [])
@@ -497,7 +554,9 @@ class SpatialData(pd.DataFrame):
         plt.suptitle('Selected Expression Densities:', fontsize=18)
 
     def plot_radial_distribution(self, n_neighbors=30, **kwargs):
-        distances, _, _ = self.knn(n_neighbors=n_neighbors)
+        # distances, _, _ = self.knn(n_neighbors=n_neighbors)
+        self.graph.update_knn(n_neighbors=n_neighbors)
+        distances = self.graph.distances
         plt.hist(distances[:, 1:n_neighbors].flatten(), **kwargs)
 
     def spatial_decomposition(
@@ -512,7 +571,9 @@ class SpatialData(pd.DataFrame):
         if mRNAs_neighbor is None:
             mRNAs_neighbor = self.gene_classes
 
-        _, neighbors, _ = self.knn(n_neighbors=n_neighbors)
+        # _, neighbors, _ = self.knn(n_neighbors=n_neighbors)
+        self.graph.update_knn(n_neighbors=n_neighbors)
+        neighbors = self.graph.neighbors
         neighbor_classes = np.array(self.gene_ids)[neighbors]
 
         pptx = []
@@ -598,7 +659,9 @@ class SpatialData(pd.DataFrame):
         self,
         n_neighbors=10,
     ):
-        distances, indices, types = self.knn(n_neighbors=n_neighbors)
+        # distances, indices, types = self.knn(n_neighbors=n_neighbors)
+        self.graph.update_knn(n_neighbors=n_neighbors)
+        types = self.graph.neighbor_types
         count_matrix = sparse.lil_matrix(
             (types.shape[0], self.gene_classes.shape[0]))
         for i, t in enumerate(types):
