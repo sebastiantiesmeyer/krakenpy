@@ -40,7 +40,7 @@ class SpatialData():
 
     @property
     def counts_sorted(self):
-        return self.counts[self.count_idcs]
+        return self.stats.counts[self.count_idcs]
 
     @property
     def gene_classes_sorted(self):
@@ -78,7 +78,7 @@ class SpatialData():
 
     def get_count(self, gene):
         if gene in self.gene_classes.values:
-            return int(self.counts[self.gene_classes == gene])
+            return int(self.stats.counts[self.gene_classes == gene])
 
     def get_count_rank(self, gene):
         if gene in self.gene_classes.values:
@@ -148,7 +148,7 @@ class SpatialData():
             color=[
                 colors[np.where(
                     dem_plots == i)[0][0]] if i in dem_plots else 'grey'
-                for i in range(len(self.counts))
+                for i in range(len(self.stats.counts))
             ])
 
         axd['bar'].set_xticks(range(len(H)),
@@ -199,7 +199,7 @@ class SpatialData():
     def plot_bars(self, axis=None, **kwargs):
         if axis is None:
             axis = plt.subplot(111)
-        axis.bar(np.arange(len(self.counts)), self.counts_sorted, **kwargs)
+        axis.bar(np.arange(len(self.stats.counts)), self.counts_sorted, **kwargs)
         axis.set_yscale('log')
 
         axis.set_xticks(
@@ -215,7 +215,7 @@ class SpatialData():
         colors = ('royalblue', 'goldenrod', 'red', 'lime')
 
         scatter_idcs = np.round(np.linspace(0,
-                                            len(self.counts) - 1,
+                                            len(self.stats.counts) - 1,
                                             4)).astype(int)
 
         fig, axd = plt.subplot_mosaic(
@@ -229,7 +229,7 @@ class SpatialData():
             color=[
                 colors[np.where(
                     scatter_idcs == i)[0][0]] if i in scatter_idcs else 'grey'
-                for i in range(len(self.counts))
+                for i in range(len(self.stats.counts))
             ])
 
         # bbox = axd['bar'].get_window_extent().transformed(
@@ -252,7 +252,7 @@ class SpatialData():
             # if i>0:
             axd[plot_name].set_yticks([], [])
 
-            con = ConnectionPatch(xyA=(scatter_idcs[i], self.counts[idx]),
+            con = ConnectionPatch(xyA=(scatter_idcs[i], self.stats.counts[idx]),
                                   coordsA=axd['bar'].transData,
                                   xyB=(np.mean(axd[plot_name].get_xlim()),
                                        axd[plot_name].get_ylim()[0]),
