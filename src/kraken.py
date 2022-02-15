@@ -10,6 +10,8 @@ from numpy.lib.arraysetops import unique
 from numpy.lib.type_check import _nan_to_num_dispatcher
 from scipy import sparse
 import collections
+import scanpy as sc
+import anndata
 
 import pandas as pd
 import numpy as np
@@ -44,23 +46,15 @@ class PixelMap():
 
     @property
     def shape(self):
-        return self.extent[1], self.extent[3]
+        return self.extent[1]-self.extent[0], self.extent[3]-self.extent[2]
 
-    # def rescale(self, factor):
-
-    #     if not isinstance(factor, collections.Iterable) or len(factor)==1:
-    #         factor = (factor,factor)
-
-    #     origin = (self.extent[0],self.extent[2])
-    #     self.extent = (origin[0], origin[0] + self.pixel_data.shape[1] * factor[0],
-    #                    origin[1], origin[1] + self.pixel_data.shape[0] * factor[1])
 
     def imshow(self, **kwargs):
 
         extent = np.array(self.extent)
         # print(extent)
 
-        plt.imshow(self.data**0.5, extent=extent[[0, 3, 1, 2]], **kwargs)
+        plt.imshow(self.data**0.5   , extent=extent[[0, 3, 1, 2]], **kwargs)
 
     def __getitem__(self, indices):
         # print(indices)
@@ -97,6 +91,78 @@ class PixelMap():
             upscale=self.scale,
         )
 
+class SsamLite(PixelMap):
+    def __init__(self,sd,bandwidth=3,threshold_vf_norm=1, threshold_p_corr=0.5, upscale=1):
+
+        self.sd = sd
+        self.bandwidth = bandwidth
+        self.threshold_vf_norm = threshold_vf_norm
+        self.threshold_p_corr = threshold_p_corr
+
+        self.extent = tuple(self.sd.background.extent)
+        self.extent_shape = (int(self.extent[1]-self.extent[0]), int(self.extent[3]-self.extent[2]))
+
+        self.scale=upscale
+        self.data = np.zeros((int(self.shape[0]*self.scale),int(self.shape[1]*self.scale)))
+        # self.data=self.celltype_map
+        # self.run_algorithm()
+
+    @property
+    def signatures(self):
+        return self.sd.scanpy.signatures
+
+    def run_algorithm(self):
+        # from tqdm import tqdm_notebook
+
+        kernel = self.generate_kernel(15,self.scale)
+
+        X_int = np.array(self.sd.Y*self.scale).astype(int)
+        Y_int = np.array(self.sd.X*self.scale).astype(int)
+        sort_idcs = np.argsort(X_int)
+        X_ = X_int[sort_idcs]
+        Y_ = Y_int[sort_idcs]
+
+        uniques,inv_idcs = np.unique(X_,return_index=True)
+
+        gene_ids = np.array(self.sd.gene_ids)[sort_idcs]
+
+        print(self.celltype_map.shape)
+
+        temp_vf = np.zeros((kernel.shape[0],self.celltype_map.shape[1]+kernel.shape[0]+10,len(self.sd.gene_classes)))
+
+        n=0
+
+        for i,u_ in enumerate(uniques[:-1]):
+            
+            _u = uniques[i+1]
+            
+            u_u = min(_u-u_,kernel.shape[0])
+            
+            y = Y_[inv_idcs[i]:inv_idcs[i+1]]
+            ids = gene_ids[inv_idcs[i]:inv_idcs[i+1]]
+            
+            for i,k in enumerate(kernel):
+                temp_vf[:,y+i,ids]+=k[:,None]
+            
+            self.celltype_map[u_:u_+u_u]=temp_vf[-u_u:,19:].sum(-1)
+            
+            temp_vf[-u_u:]=0
+            
+            temp_vf = np.roll(temp_vf,u_u,axis=0)
+            
+    
+
+       
+
+
+    def generate_kernel(self, bandwidth, scale=1):
+
+        kernel_width_in_pixels = int(bandwidth * scale * 6) # kernel is 3 sigmas wide.
+
+        span = np.linspace(-3,3,kernel_width_in_pixels)
+        X,Y = np.meshgrid(span,span)
+
+        return 1/(2*np.pi)**0.5*np.exp(-0.5*((X**2+Y**2)**0.5)**2)
 
 class SpatialGraph():
 
@@ -131,23 +197,157 @@ class SpatialGraph():
 
     def update_knn(self, n_neighbors, re_run=False):
 
-        if self._neighbors is not None and n_neighbors < self._neighbors.shape[1]:
-            return (self._neighbors[:, n_neighbors], 
-                    self._distances[:, n_neighbors], 
-                    self._neighbor_types[:, n_neighbors])
+        if self._neighbors is not None and (n_neighbors < self._neighbors.shape[1]):
+            return (self._neighbors[:, :n_neighbors], 
+                    self._distances[:, :n_neighbors], 
+                    self._neighbor_types[:, :n_neighbors])
         else:
             
 
             coordinates = np.stack([self.df.X, self.df.Y]).T
             knn = NearestNeighbors(n_neighbors=n_neighbors)
             knn.fit(coordinates)
-            distances, neighbors = knn.kneighbors(coordinates)
-            neighbor_types = np.array(self.df.gene_ids)[neighbors]
+            self._distances, self._neighbors = knn.kneighbors(coordinates)
+            self._neighbor_types = np.array(self.df.gene_ids)[self._neighbors]
 
             self.n_neighbors = n_neighbors
 
-            return distances, neighbors, neighbor_types
+            return self.distances, self.neighbors, self.neighbor_types
 
+class ScanpyDataFrame():
+    def __init__(self,  sd, scanpy_ds):
+        self.sd = sd
+        self.adata = scanpy_ds
+        self.stats = ScStatistics(self)
+        self.celltype_labels=None
+        self.signature_matrix=None
+
+    @property
+    def shape(self):
+        return self.adata.shape
+
+    def generate_signatures(self, celltype_obs_marker='celltype'):
+
+        self.celltype_labels = np.unique(self.adata.obs[celltype_obs_marker])
+
+
+        self.signature_matrix = np.zeros((len(self.celltype_labels),self.adata.shape[1],))
+
+        for i,label in enumerate(self.celltype_labels):
+            self.signature_matrix[i] = np.array(self.adata[self.adata.obs[celltype_obs_marker]==label].X.sum(0)).flatten()
+
+        self.signature_matrix = self.signature_matrix-self.signature_matrix.mean(1)[:,None]
+        self.signature_matrix = self.signature_matrix/self.signature_matrix.std(1)[:,None]
+
+        return self.signature_matrix
+
+
+    def synchronize(self):
+        joined_genes = (self.stats.gene_classes & self.sd.stats.gene_classes).sort_values()
+        self.adata=self.adata[:,joined_genes]
+        self.stats = ScStatistics(self)
+
+        self.sd.drop(index=list(self.sd.index[~self.sd.gene_annotations.isin(joined_genes)]), inplace=True)
+
+        self.sd.stats = PointStatistics(self.sd)
+
+        self.sd.graph = SpatialGraph(self.sd)
+        
+       
+class GeneStatistics():
+
+    @property
+    def counts(self):
+        return self.data['counts']
+
+    @property
+    def index(self):
+        return self.data.index 
+
+    @property
+    def counts_sorted(self):
+        return self.data.counts[self.stats.count_indices]
+
+    @property
+    def count_indices(self):
+        return self.data.count_indices
+
+
+    @property
+    def gene_ids(self):
+        return self.data.gene_ids
+
+    @property
+    def gene_classes(self):
+        return self.index
+        
+    def get_count(self, gene):
+        if gene in self.gene_classes.values:
+            return int(self.data.counts[self.gene_classes == gene])
+
+    def get_id(self, gene_name):
+        return int(self.data.gene_ids[self.gene_classes == gene_name])
+
+    def get_count_rank(self, gene):
+        if gene in self.gene_classes.values:
+            return int(self.stats.count_ranks[self.gene_classes == gene])
+
+class PointStatistics(GeneStatistics):
+    def __init__(self,sd):
+        self.sd = sd
+        self.data = None
+
+        self.update_stats()
+
+    def update_stats(self):
+        gene_classes, indicers, inverse, counts = np.unique(
+            self.sd['gene_annotations'],
+            return_index=True,
+            return_inverse=True,
+            return_counts=True,
+        )
+
+        count_idcs = np.argsort(counts)
+        count_ranks = np.argsort(count_idcs)
+
+        self.data = pd.DataFrame(
+            {
+                'counts': counts,
+                'count_ranks': count_ranks,
+                'count_indices': count_idcs,
+                'gene_ids': np.arange(len(gene_classes))
+            },
+            index=gene_classes)
+
+        self.sd['gene_id'] = inverse
+
+        self.sd.graph = SpatialGraph(self)
+
+class ScStatistics(GeneStatistics):
+    def __init__(self,scanpy_df):
+        self.adata = scanpy_df.adata
+        self.data = None
+
+        self.update_stats()
+
+    def update_stats(self):
+
+        counts = np.array(self.adata.X.sum(0)).squeeze()
+        gene_classes = self.adata.var.index
+
+        count_idcs = np.argsort(counts)
+        count_ranks = np.argsort(count_idcs)
+
+        self.data = pd.DataFrame(
+            {
+                'counts': counts,
+                'count_ranks': count_ranks,
+                'count_indices': count_idcs,
+                'gene_ids': np.arange(len(gene_classes))
+            },
+            index=gene_classes)
+
+        print(counts.shape,count_ranks.shape)
 
 class SpatialIndexer():
 
@@ -159,10 +359,11 @@ class SpatialIndexer():
         if self.df.background is None:
             return np.ceil(self.df.X.max() - self.df.X.min()).astype(
                 int), np.ceil(self.df.Y.max() - self.df.Y.min()).astype(int)
+        else:
+            return self.df.background.shape
 
     def create_cropping_mask(self, start, stop, series):
 
-        # print(start, stop)
         if start is None:
             start = 0
 
@@ -195,7 +396,7 @@ class SpatialIndexer():
 
         return SpatialData(self.df.gene_annotations[mask],
                            self.df.X[mask] - start_x,
-                           self.df.Y[mask] - start_y, pixel_maps)
+                           self.df.Y[mask] - start_y, pixel_maps, self.df.scanpy.adata, self.df.synchronize)
 
     def __getitem__(self, indices):
 
@@ -210,24 +411,26 @@ class SpatialIndexer():
 
         return self.crop(xlims, ylims)
 
-
 class SpatialData(pd.DataFrame):
 
     def __init__(self,
                  gene_annotations,
                  x_coordinates,
                  y_coordinates,
-                 pixel_maps=[]):
+                 pixel_maps=[],
+                 scanpy=None,
+                 synchronize=True):
 
+        # Initiate 'own' spot data:
         super(SpatialData, self).__init__({
             'gene_annotations': gene_annotations,
             'X': x_coordinates,
             'Y': y_coordinates
         })
 
-        self._metadata = ['uns', 'stats', 'pixel_maps']
-        self.uns = {'background': None}
+        # Initiate pixel maps:
         self.pixel_maps = []
+        self.stats = PointStatistics(self)
 
         self.graph = SpatialGraph(self)
 
@@ -237,11 +440,15 @@ class SpatialData(pd.DataFrame):
             else:
                 self.pixel_maps.append(pm)
 
-        self.update_stats()
+        self.synchronize=synchronize
 
-    # @property
-    # def count_idcs(self):
-    #     return self.stats.count_indices
+        # Append scanpy data set, synchronize both:        
+        self.scanpy=ScanpyDataFrame(self,scanpy)
+        # self.update_stats()
+
+
+        # if scanpy is not None and synchronize:
+        #     self.synchronize(1,1)
 
     @property
     def gene_ids(self):
@@ -263,10 +470,6 @@ class SpatialData(pd.DataFrame):
     def gene_classes(self):
         return self.stats.index
 
-    # @property
-    # def count_ranks(self):
-    #     return self.stats['count_ranks']
-
     @property
     def spatial(self):
         return SpatialIndexer(self)
@@ -275,8 +478,6 @@ class SpatialData(pd.DataFrame):
     def background(self):
         if len(self.pixel_maps):
             return self.pixel_maps[0]
-
-        #.__getitem__(self, arg):
 
     def __getitem__(self, *arg):
 
@@ -304,54 +505,61 @@ class SpatialData(pd.DataFrame):
                     return super().__getitem__(*arg)
                 new_data = super().iloc.__getitem__(arg[0])
 
+            if self.scanpy is not None:
+                scanpy=self.scanpy.adata
+                synchronize = self.scanpy.synchronize
+            else:
+                scanpy=None
+                synchronize=None
+
             new_frame = SpatialData(new_data.gene_annotations, new_data.X,
-                                    new_data.Y, self.pixel_maps)
-            new_frame.update_stats()
+                                    new_data.Y, self.pixel_maps, scanpy=scanpy, synchronize=synchronize)
+            # new_frame.update_stats()
             return (new_frame)
 
-        print('Converting to generic Pandas.')
+        print('Reverting to generic Pandas.')
         return super().__getitem__(*arg)
 
-    def update_stats(self):
+    def sync_scanpy(self, mRNA_threshold_sc=1, mRNA_threshold_spatial=1, verbose=False,  anndata=None):
+        if anndata is None and self.scanpy is None:
+            print('Please provide some scanpy data...')
 
-        gene_classes, indicers, inverse, counts = np.unique(
-            super().__getitem__(['gene_annotations']),
-            return_index=True,
-            return_inverse=True,
-            return_counts=True,
-        )
+        if anndata is not None:
+            self.scanpy=ScanpyDataFrame(anndata)
+        else:
+            self.scanpy.synchronize()
 
-        count_idcs = np.argsort(counts)
-        count_ranks = np.argsort(count_idcs)
+    # def update_stats(self):
 
-        self.stats = pd.DataFrame(
-            {
-                # 'gene_classes': gene_classes,
-                'counts': counts,
-                'count_ranks': count_ranks,
-                'count_indices': count_idcs,
-                'gene_ids': np.arange(len(gene_classes))
-            },
-            index=gene_classes)
+    #     gene_classes, indicers, inverse, counts = np.unique(
+    #         super().__getitem__(['gene_annotations']),
+    #         return_index=True,
+    #         return_inverse=True,
+    #         return_counts=True,
+    #     )
 
-        self['gene_id'] = inverse
+    #     count_idcs = np.argsort(counts)
+    #     count_ranks = np.argsort(count_idcs)
 
-        self.graph = SpatialGraph(self)
+    #     self.stats = pd.DataFrame(
+    #         {
+    #             # 'gene_classes': gene_classes,
+    #             'counts': counts,
+    #             'count_ranks': count_ranks,
+    #             'count_indices': count_idcs,
+    #             'gene_ids': np.arange(len(gene_classes))
+    #         },
+    #         index=gene_classes)
 
-    def get_count(self, gene):
-        if gene in self.gene_classes.values:
-            return int(self.stats.counts[self.gene_classes == gene])
+    #     self['gene_id'] = inverse
+
+    #     self.graph = SpatialGraph(self)
 
     def get_id(self, gene_name):
         return int(self.stats.gene_ids[self.gene_classes == gene_name])
 
-    def get_count_rank(self, gene):
-        if gene in self.gene_classes.values:
-            return int(self.stats.count_ranks[self.gene_classes == gene])
-
     def knn_entropy(self, n_neighbors=4):
 
-        # _, indices, _ = self.knn(n_neighbors=n_neighbors)
         self.graph.update_knn(n_neighbors=n_neighbors)
         indices = self.graph.neighbors#(n_neighbors=n_neighbors)
 
@@ -553,7 +761,7 @@ class SpatialData(pd.DataFrame):
 
         self.graph.update_knn(n_neighbors=n_neighbors)
         neighbors = self.graph.neighbors
-        neighbor_classes = np.array(self.gene_ids)[neighbors]
+        neighbor_classes = self.graph.neighbor_types #np.array(self.gene_ids)[neighbors]
 
         pptx = []
         ppty = []
@@ -676,7 +884,6 @@ class SpatialData(pd.DataFrame):
     def scatter_celltype_affinities(self, adata, celltypes_1,celltypes_2=None):
         adata,sdata = synchronize(adata,self)
 
-
 def determine_gains(sc, spatial):
 
     sc_genes = sc.var.index
@@ -685,7 +892,6 @@ def determine_gains(sc, spatial):
     counts_spatial = counts_spatial / counts_spatial.sum()
     count_ratios = counts_sc / counts_spatial
     return count_ratios
-
 
 def plot_gains(sc, spatial):
 
