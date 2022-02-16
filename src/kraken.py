@@ -3,7 +3,14 @@
 # from sqlite3 import SQLITE_CREATE_TABLE
 # from turtle import back, distance, update
 # from types import CellType
+# from collections.abc import Iterable
+from __future__ import annotations
+from ntpath import join
 from os import sync
+
+from typing import Union, Any, Optional, cast
+
+
 from matplotlib import pyplot as plt
 from matplotlib.patches import ConnectionPatch
 from numpy.lib.arraysetops import unique
@@ -16,16 +23,17 @@ import anndata
 import pandas as pd
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
-from skimage.transform import rescale  #from scikit-image import , resize, downscale_local_mean
+# from scikit-image import , resize, downscale_local_mean
+from skimage.transform import rescale
 
 
 class PixelMap():
 
-    def __init__(self,
-                 pixel_data,
-                 name=None,
-                 upscale=1,
-                 pixel_data_original=None):
+    def __init__(self: PixelMap,
+                 pixel_data: np.ndarray,
+                 name: str = None,
+                 upscale: float = 1.0,
+                 pixel_data_original=None) -> None:
 
         self.data = pixel_data
         if pixel_data_original is not None:
@@ -46,17 +54,15 @@ class PixelMap():
 
     @property
     def shape(self):
-        return self.extent[1]-self.extent[0], self.extent[3]-self.extent[2]
+        return self.extent[1] - self.extent[0], self.extent[3] - self.extent[2]
 
-
-    def imshow(self, **kwargs):
-
+    def imshow(self, **kwargs) -> None:
         extent = np.array(self.extent)
         # print(extent)
 
-        plt.imshow(self.data**0.5   , extent=extent[[0, 3, 1, 2]], **kwargs)
+        plt.imshow(self.data**0.5, extent=extent[[0, 3, 1, 2]], **kwargs)
 
-    def __getitem__(self, indices):
+    def __getitem__(self, indices: Union[slice, collections.Iterable[slice]]):
         # print(indices)
 
         if not isinstance(indices, collections.Iterable):
@@ -71,15 +77,23 @@ class PixelMap():
             else:
                 index_y = slice(0, None, None)
 
-        if (index_x.start is None): start_x = 0  #self.extent[0]
-        else: start_x = index_x.start
-        if (index_x.stop is None): stop_x = self.extent[1]
-        else: stop_x = index_x.stop
+        if (index_x.start is None):
+            start_x = 0  # self.extent[0]
+        else:
+            start_x = index_x.start
+        if (index_x.stop is None):
+            stop_x = self.extent[1]
+        else:
+            stop_x = index_x.stop
 
-        if (index_y.start is None): start_y = 0  #self.extent[2]
-        else: start_y = index_y.start
-        if (index_y.stop is None): stop_y = self.extent[3]
-        else: stop_y = index_y.stop
+        if (index_y.start is None):
+            start_y = 0  # self.extent[2]
+        else:
+            start_y = index_y.start
+        if (index_y.stop is None):
+            stop_y = self.extent[3]
+        else:
+            stop_y = index_y.stop
 
         data = self.data[int(start_y * self.scale[1]):int(stop_y *
                                                           self.scale[1]),
@@ -91,8 +105,15 @@ class PixelMap():
             upscale=self.scale,
         )
 
+
 class SsamLite(PixelMap):
-    def __init__(self,sd,bandwidth=3,threshold_vf_norm=1, threshold_p_corr=0.5, upscale=1):
+
+    def __init__(self,
+                 sd: SpatialData,
+                 bandwidth: float = 3.0,
+                 threshold_vf_norm: float = 1.0,
+                 threshold_p_corr: float = 0.5,
+                 upscale: float = 1) -> None:
 
         self.sd = sd
         self.bandwidth = bandwidth
@@ -100,69 +121,71 @@ class SsamLite(PixelMap):
         self.threshold_p_corr = threshold_p_corr
 
         self.extent = tuple(self.sd.background.extent)
-        self.extent_shape = (int(self.extent[1]-self.extent[0]), int(self.extent[3]-self.extent[2]))
+        self.extent_shape = (int(self.extent[1] - self.extent[0]),
+                             int(self.extent[3] - self.extent[2]))
 
-        self.scale=upscale
-        self.data = np.zeros((int(self.shape[0]*self.scale),int(self.shape[1]*self.scale)))
+        self.scale = upscale
+        self.data = np.zeros(
+            (int(self.shape[0] * self.scale), int(self.shape[1] * self.scale)))
         # self.data=self.celltype_map
         # self.run_algorithm()
 
     @property
-    def signatures(self):
+    def signatures(self) -> np.ndarray:
         return self.sd.scanpy.signatures
 
-    def run_algorithm(self):
+    def run_algorithm(self) -> None:
+
         # from tqdm import tqdm_notebook
 
-        kernel = self.generate_kernel(15,self.scale)
+        kernel = self.generate_kernel(15, self.scale)
 
-        X_int = np.array(self.sd.Y*self.scale).astype(int)
-        Y_int = np.array(self.sd.X*self.scale).astype(int)
+        X_int = np.array(self.sd.Y * self.scale).astype(int)
+        Y_int = np.array(self.sd.X * self.scale).astype(int)
         sort_idcs = np.argsort(X_int)
         X_ = X_int[sort_idcs]
         Y_ = Y_int[sort_idcs]
 
-        uniques,inv_idcs = np.unique(X_,return_index=True)
+        uniques, inv_idcs = np.unique(X_, return_index=True)
 
         gene_ids = np.array(self.sd.gene_ids)[sort_idcs]
 
         print(self.celltype_map.shape)
 
-        temp_vf = np.zeros((kernel.shape[0],self.celltype_map.shape[1]+kernel.shape[0]+10,len(self.sd.gene_classes)))
+        temp_vf = np.zeros((kernel.shape[0],
+                            self.celltype_map.shape[1] + kernel.shape[0] + 10,
+                            len(self.sd.gene_classes)))
 
-        n=0
+        n = 0
 
-        for i,u_ in enumerate(uniques[:-1]):
-            
-            _u = uniques[i+1]
-            
-            u_u = min(_u-u_,kernel.shape[0])
-            
-            y = Y_[inv_idcs[i]:inv_idcs[i+1]]
-            ids = gene_ids[inv_idcs[i]:inv_idcs[i+1]]
-            
-            for i,k in enumerate(kernel):
-                temp_vf[:,y+i,ids]+=k[:,None]
-            
-            self.celltype_map[u_:u_+u_u]=temp_vf[-u_u:,19:].sum(-1)
-            
-            temp_vf[-u_u:]=0
-            
-            temp_vf = np.roll(temp_vf,u_u,axis=0)
-            
-    
+        for i, u_ in enumerate(uniques[:-1]):
 
-       
+            _u = uniques[i + 1]
 
+            u_u = min(_u - u_, kernel.shape[0])
 
-    def generate_kernel(self, bandwidth, scale=1):
+            y = Y_[inv_idcs[i]:inv_idcs[i + 1]]
+            ids = gene_ids[inv_idcs[i]:inv_idcs[i + 1]]
 
-        kernel_width_in_pixels = int(bandwidth * scale * 6) # kernel is 3 sigmas wide.
+            for i, k in enumerate(kernel):
+                temp_vf[:, y + i, ids] += k[:, None]
 
-        span = np.linspace(-3,3,kernel_width_in_pixels)
-        X,Y = np.meshgrid(span,span)
+            self.celltype_map[u_:u_ + u_u] = temp_vf[-u_u:, 19:].sum(-1)
 
-        return 1/(2*np.pi)**0.5*np.exp(-0.5*((X**2+Y**2)**0.5)**2)
+            temp_vf[-u_u:] = 0
+
+            temp_vf = np.roll(temp_vf, u_u, axis=0)
+
+    def generate_kernel(self, bandwidth: float, scale: float = 1) -> np.ndarray:
+
+        kernel_width_in_pixels = int(bandwidth * scale *
+                                     6)  # kernel is 3 sigmas wide.
+
+        span = np.linspace(-3, 3, kernel_width_in_pixels)
+        X, Y = np.meshgrid(span, span)
+
+        return 1 / (2 * np.pi)**0.5 * np.exp(-0.5 * ((X**2 + Y**2)**0.5)**2)
+
 
 class SpatialGraph():
 
@@ -197,12 +220,12 @@ class SpatialGraph():
 
     def update_knn(self, n_neighbors, re_run=False):
 
-        if self._neighbors is not None and (n_neighbors < self._neighbors.shape[1]):
-            return (self._neighbors[:, :n_neighbors], 
-                    self._distances[:, :n_neighbors], 
+        if self._neighbors is not None and (n_neighbors <
+                                            self._neighbors.shape[1]):
+            return (self._neighbors[:, :n_neighbors],
+                    self._distances[:, :n_neighbors],
                     self._neighbor_types[:, :n_neighbors])
         else:
-            
 
             coordinates = np.stack([self.df.X, self.df.Y]).T
             knn = NearestNeighbors(n_neighbors=n_neighbors)
@@ -214,13 +237,15 @@ class SpatialGraph():
 
             return self.distances, self.neighbors, self.neighbor_types
 
+
 class ScanpyDataFrame():
-    def __init__(self,  sd, scanpy_ds):
+
+    def __init__(self, sd, scanpy_ds):
         self.sd = sd
         self.adata = scanpy_ds
         self.stats = ScStatistics(self)
-        self.celltype_labels=None
-        self.signature_matrix=None
+        self.celltype_labels = None
+        self.signature_matrix = None
 
     @property
     def shape(self):
@@ -230,77 +255,161 @@ class ScanpyDataFrame():
 
         self.celltype_labels = np.unique(self.adata.obs[celltype_obs_marker])
 
+        self.signature_matrix = np.zeros((
+            len(self.celltype_labels),
+            self.adata.shape[1],
+        ))
 
-        self.signature_matrix = np.zeros((len(self.celltype_labels),self.adata.shape[1],))
+        for i, label in enumerate(self.celltype_labels):
+            self.signature_matrix[i] = np.array(
+                self.adata[self.adata.obs[celltype_obs_marker] == label].X.sum(
+                    0)).flatten()
 
-        for i,label in enumerate(self.celltype_labels):
-            self.signature_matrix[i] = np.array(self.adata[self.adata.obs[celltype_obs_marker]==label].X.sum(0)).flatten()
-
-        self.signature_matrix = self.signature_matrix-self.signature_matrix.mean(1)[:,None]
-        self.signature_matrix = self.signature_matrix/self.signature_matrix.std(1)[:,None]
+        self.signature_matrix = self.signature_matrix - self.signature_matrix.mean(
+            1)[:, None]
+        self.signature_matrix = self.signature_matrix / self.signature_matrix.std(
+            1)[:, None]
 
         return self.signature_matrix
 
-
     def synchronize(self):
-        joined_genes = (self.stats.gene_classes & self.sd.stats.gene_classes).sort_values()
-        self.adata=self.adata[:,joined_genes]
-        self.stats = ScStatistics(self)
 
-        self.sd.drop(index=list(self.sd.index[~self.sd.gene_annotations.isin(joined_genes)]), inplace=True)
+        joined_genes = (self.stats.gene_classes
+                        & self.sd.gene_classes).sort_values()
+
+        # print(len(joined_genes))
+
+        self.sd.reset_index()
+        self.adata = self.adata[:, joined_genes]
+        self.stats = ScStatistics(self)
+        self.sd.drop(index=list(
+            self.sd.index[~self.sd.gene_annotations.isin(joined_genes)]),
+            inplace=True)
 
         self.sd.stats = PointStatistics(self.sd)
 
         self.sd.graph = SpatialGraph(self.sd)
+<<<<<<< HEAD
               
 class GeneStatistics():
+=======
 
-    @property
-    def counts(self):
-        return self.data['counts']
 
-    @property
-    def index(self):
-        return self.data.index 
+    def determine_gains(self):
+
+        sc_genes = self.adata.var.index
+        counts_sc = np.array(self.adata.X.sum(0) / self.adata.X.sum()).flatten()
+        
+        counts_spatial = np.array([self.sd.stats.get_count(g) for g in sc_genes])
+>>>>>>> 4ca77d649e40ee0c171f19eb2a885650fff8c736
+
+        counts_spatial = counts_spatial / counts_spatial.sum()
+        count_ratios = counts_sc / counts_spatial
+        return count_ratios
+
+
+    def plot_gains(self):
+
+        sc_genes = self.adata.var.index
+
+        # counts_spatial_reindexed = counts_spatial [[spatial.get_sort_index(g) for g in sc.unique_genes_sorted]]
+        count_ratios = self.determine_gains()
+        idcs = np.argsort(count_ratios)
+
+        ax = plt.subplot(111)
+
+        span = np.linspace(0, 1, len(idcs))
+        clrs = np.stack([
+            span,
+            span * 0,
+            span[::-1],
+        ]).T
+
+        ax.barh(range(len(count_ratios)), np.log(count_ratios[idcs]), color=clrs)
+
+        ax.text(0,
+                len(idcs) + 3,
+                'lost in spatial ->',
+                ha='center',
+                fontsize=12,
+                color='red')
+        ax.text(0, -3, '<- lost in SC', ha='center', fontsize=12, color='lime')
+
+        for i, gene in enumerate(sc_genes[idcs]):
+            if count_ratios[idcs[i]] < 1:
+                ha = 'left'
+                xpos = 0.05
+            else:
+                ha = 'right'
+                xpos = -0.05
+            ax.text(0, i, gene, ha=ha)
+
+        ax.set_yticks([], [])
+
+
+    def compare_counts(self):
+
+        sc_genes = (self.adata.var.index)
+        sc_counts = (np.array(self.adata.X.sum(0)).flatten())
+        sc_count_idcs = np.argsort(sc_counts)
+        count_ratios = np.log(self.determine_gains())
+        count_ratios -= count_ratios.min()
+        count_ratios /= count_ratios.max()
+
+        ax1 = plt.subplot(311)
+        ax1.set_title('compared molecule counts:')
+        ax1.bar(np.arange(len(sc_counts)), sc_counts[sc_count_idcs], color='grey')
+        ax1.set_ylabel('log(count) scRNAseq')
+        ax1.set_xticks(np.arange(len(sc_genes)),
+                    sc_genes[sc_count_idcs],
+                    rotation=90)
+        ax1.set_yscale('log')
+
+        ax2 = plt.subplot(312)
+        for i, gene in enumerate(sc_genes[sc_count_idcs]):
+            plt.plot(
+                [i, self.sd.stats.get_count_rank(gene)],
+                [1, 0],
+            )
+        plt.axis('off')
+        ax2.set_ylabel(' ')
+
+        ax3 = plt.subplot(313)
+        self.sd.plot_bars(ax3, color='grey')
+        ax3.invert_yaxis()
+        ax3.xaxis.tick_top()
+        ax3.xaxis.set_label_position('top')
+        ax3.set_ylabel('log(count) spatial')
+
+
+class GeneStatistics(pd.DataFrame):
+    def __init__(self, *args,**kwargs):
+        super(GeneStatistics, self).__init__(*args,**kwargs)
 
     @property
     def counts_sorted(self):
         return self.data.counts[self.stats.count_indices]
 
     @property
-    def count_indices(self):
-        return self.data.count_indices
-
-
-    @property
-    def gene_ids(self):
-        return self.data.gene_ids
-
-    @property
     def gene_classes(self):
         return self.index
-        
+
     def get_count(self, gene):
         if gene in self.gene_classes.values:
-            return int(self.data.counts[self.gene_classes == gene])
+            return int(self.counts[self.gene_classes == gene])
 
     def get_id(self, gene_name):
-        return int(self.data.gene_ids[self.gene_classes == gene_name])
+        return int(self.gene_ids[self.gene_classes == gene_name])
 
     def get_count_rank(self, gene):
         if gene in self.gene_classes.values:
-            return int(self.stats.count_ranks[self.gene_classes == gene])
+            return int(self.count_ranks[self.gene_classes == gene])
+
 
 class PointStatistics(GeneStatistics):
-    def __init__(self,sd):
-        self.sd = sd
-        self.data = None
-
-        self.update_stats()
-
-    def update_stats(self):
+    def __init__(self, sd):
         gene_classes, indicers, inverse, counts = np.unique(
-            self.sd['gene_annotations'],
+            sd['gene_annotations'],
             return_index=True,
             return_inverse=True,
             return_counts=True,
@@ -309,7 +418,7 @@ class PointStatistics(GeneStatistics):
         count_idcs = np.argsort(counts)
         count_ranks = np.argsort(count_idcs)
 
-        self.data = pd.DataFrame(
+        super(PointStatistics, self).__init__(
             {
                 'counts': counts,
                 'count_ranks': count_ranks,
@@ -318,26 +427,22 @@ class PointStatistics(GeneStatistics):
             },
             index=gene_classes)
 
-        self.sd['gene_id'] = inverse
+        sd['gene_id'] = inverse
 
-        self.sd.graph = SpatialGraph(self)
+        sd.graph = SpatialGraph(self)
+
 
 class ScStatistics(GeneStatistics):
-    def __init__(self,scanpy_df):
-        self.adata = scanpy_df.adata
-        self.data = None
 
-        self.update_stats()
+    def __init__(self, scanpy_df):
 
-    def update_stats(self):
-
-        counts = np.array(self.adata.X.sum(0)).squeeze()
-        gene_classes = self.adata.var.index
+        counts = np.array(scanpy_df.adata.X.sum(0)).squeeze()
+        gene_classes = scanpy_df.adata.var.index
 
         count_idcs = np.argsort(counts)
         count_ranks = np.argsort(count_idcs)
 
-        self.data = pd.DataFrame(
+        super(ScStatistics, self).__init__(
             {
                 'counts': counts,
                 'count_ranks': count_ranks,
@@ -345,8 +450,12 @@ class ScStatistics(GeneStatistics):
                 'gene_ids': np.arange(len(gene_classes))
             },
             index=gene_classes)
+  
 
+<<<<<<< HEAD
         # print(counts.shape,count_ranks.shape)
+=======
+>>>>>>> 4ca77d649e40ee0c171f19eb2a885650fff8c736
 
 class SpatialIndexer():
 
@@ -395,7 +504,8 @@ class SpatialIndexer():
 
         return SpatialData(self.df.gene_annotations[mask],
                            self.df.X[mask] - start_x,
-                           self.df.Y[mask] - start_y, pixel_maps, self.df.scanpy.adata, self.df.synchronize)
+                           self.df.Y[mask] - start_y, pixel_maps,
+                           self.df.scanpy.adata, self.df.synchronize)
 
     def __getitem__(self, indices):
 
@@ -409,6 +519,7 @@ class SpatialIndexer():
         xlims = (indices[0].start, indices[0].stop)
 
         return self.crop(xlims, ylims)
+
 
 class SpatialData(pd.DataFrame):
 
@@ -427,6 +538,8 @@ class SpatialData(pd.DataFrame):
             'Y': y_coordinates
         })
 
+        # self.reset_index()
+
         # Initiate pixel maps:
         self.pixel_maps = []
         self.stats = PointStatistics(self)
@@ -439,15 +552,19 @@ class SpatialData(pd.DataFrame):
             else:
                 self.pixel_maps.append(pm)
 
-        self.synchronize=synchronize
+        self.synchronize = synchronize
 
-        # Append scanpy data set, synchronize both:        
-        self.scanpy=ScanpyDataFrame(self,scanpy)
+        # Append scanpy data set, synchronize both:
+        if scanpy is not None:
+            self.scanpy = ScanpyDataFrame(self, scanpy)
+            if self.synchronize:
+                self.sync_scanpy()
+        else:
+            self.scanpy=None
         # self.update_stats()
 
-
-        # if scanpy is not None and synchronize:
-        #     self.synchronize(1,1)
+        # if (scanpy is not None) 
+        #     # self.sync_scanpy()
 
     @property
     def gene_ids(self):
@@ -513,54 +630,36 @@ class SpatialData(pd.DataFrame):
                 new_data = super().iloc.__getitem__(arg[0])
 
             if self.scanpy is not None:
-                scanpy=self.scanpy.adata
+                scanpy = self.scanpy.adata
                 synchronize = self.scanpy.synchronize
             else:
-                scanpy=None
-                synchronize=None
+                scanpy = None
+                synchronize = None
 
-            new_frame = SpatialData(new_data.gene_annotations, new_data.X,
-                                    new_data.Y, self.pixel_maps, scanpy=scanpy, synchronize=synchronize)
+            new_frame = SpatialData(new_data.gene_annotations,
+                                    new_data.X,
+                                    new_data.Y,
+                                    self.pixel_maps,
+                                    scanpy=scanpy,
+                                    synchronize=synchronize)
             # new_frame.update_stats()
             return (new_frame)
 
         print('Reverting to generic Pandas.')
         return super().__getitem__(*arg)
 
-    def sync_scanpy(self, mRNA_threshold_sc=1, mRNA_threshold_spatial=1, verbose=False,  anndata=None):
+    def sync_scanpy(self,
+                    mRNA_threshold_sc=1,
+                    mRNA_threshold_spatial=1,
+                    verbose=False,
+                    anndata=None):
         if anndata is None and self.scanpy is None:
             print('Please provide some scanpy data...')
 
         if anndata is not None:
-            self.scanpy=ScanpyDataFrame(anndata)
+            self.scanpy = ScanpyDataFrame(anndata)
         else:
             self.scanpy.synchronize()
-
-    # def update_stats(self):
-
-    #     gene_classes, indicers, inverse, counts = np.unique(
-    #         super().__getitem__(['gene_annotations']),
-    #         return_index=True,
-    #         return_inverse=True,
-    #         return_counts=True,
-    #     )
-
-    #     count_idcs = np.argsort(counts)
-    #     count_ranks = np.argsort(count_idcs)
-
-    #     self.stats = pd.DataFrame(
-    #         {
-    #             # 'gene_classes': gene_classes,
-    #             'counts': counts,
-    #             'count_ranks': count_ranks,
-    #             'count_indices': count_idcs,
-    #             'gene_ids': np.arange(len(gene_classes))
-    #         },
-    #         index=gene_classes)
-
-    #     self['gene_id'] = inverse
-
-    #     self.graph = SpatialGraph(self)
 
     def get_id(self, gene_name):
         return int(self.stats.gene_ids[self.gene_classes == gene_name])
@@ -568,7 +667,7 @@ class SpatialData(pd.DataFrame):
     def knn_entropy(self, n_neighbors=4):
 
         self.graph.update_knn(n_neighbors=n_neighbors)
-        indices = self.graph.neighbors#(n_neighbors=n_neighbors)
+        indices = self.graph.neighbors  # (n_neighbors=n_neighbors)
 
         knn_cells = np.zeros_like(indices)
         for i in range(indices.shape[1]):
@@ -597,8 +696,8 @@ class SpatialData(pd.DataFrame):
             ['bar', 'bar', 'bar', 'bar'],
             ['scatter_5', 'scatter_6', 'scatter_7', 'scatter_8'],
         ],
-                                      figsize=(11, 7),
-                                      constrained_layout=True)
+            figsize=(11, 7),
+            constrained_layout=True)
 
         dem_plots = np.array([
             0,
@@ -768,14 +867,19 @@ class SpatialData(pd.DataFrame):
 
         self.graph.update_knn(n_neighbors=n_neighbors)
         neighbors = self.graph.neighbors
-        neighbor_classes = self.graph.neighbor_types #np.array(self.gene_ids)[neighbors]
+        # np.array(self.gene_ids)[neighbors]
+        neighbor_classes = self.graph.neighbor_types
 
         pptx = []
         ppty = []
         clrs = []
         intensity = []
 
+<<<<<<< HEAD
         out = np.zeros((100, 100, len(mRNAs_neighbor)))
+=======
+        out = np.zeros((30, 30, len(self.gene_classes)))
+>>>>>>> 4ca77d649e40ee0c171f19eb2a885650fff8c736
 
         mask_center = np.logical_or.reduce(
             [neighbor_classes[:, 0] == self.get_id(m) for m in mRNAs_center])
@@ -799,7 +903,7 @@ class SpatialData(pd.DataFrame):
 
                 loc_neighbor = np.array(
                     (x_centered[i_n_neighbor], y_centered[i_n_neighbor]))
-                loc_neighbor_normalized = loc_neighbor / (loc_neighbor**
+                loc_neighbor_normalized = loc_neighbor / (loc_neighbor **
                                                           2).sum()**0.5
 
                 rotation_matrix = np.array(
@@ -820,18 +924,25 @@ class SpatialData(pd.DataFrame):
                 clrs.append(self.gene_ids.iloc[n][mask])
                 # intensity.append(1 / distances_filtered[i_neighbor])
 
+<<<<<<< HEAD
                 mask = (pptx[-1] >= -50) & (pptx[-1] < 50) & (
                     ppty[-1] >= -50) & (ppty[-1] < 50)
                 # out[ppty[-1].astype(int)[mask], pptx[-1].astype(int)[mask],
                 #     clrs[-1][mask]] += 1  #intensity[-1][mask]
+=======
+                # mask = (pptx[-1] >= -50) & (pptx[-1] < 50) & (
+                #     ppty[-1] >= -50) & (ppty[-1] < 50)
+                # out[ppty[-1].astype(int)[mask], pptx[-1].astype(int)[mask],
+                #     clrs[-1][mask]] += 1  # intensity[-1][mask]
+>>>>>>> 4ca77d649e40ee0c171f19eb2a885650fff8c736
 
         #         break
 
         pptx = np.concatenate(pptx)
         ppty = np.concatenate(ppty)
 
-        pptt = np.arctan(pptx/ppty)
-        pptr = (pptx**2+ppty**2)**0.5
+        pptt = np.arctan(pptx / ppty)
+        pptr = (pptx**2 + ppty**2)**0.5
 
         clrs = np.concatenate(clrs)
         
@@ -842,18 +953,20 @@ class SpatialData(pd.DataFrame):
 
         plt.axhline(0)
         plt.axvline(0)
-        plt.scatter(pptt,pptr,c=clrs, cmap='nipy_spectral', alpha=0.1,s=3)
+        plt.scatter(pptt, pptr, c=clrs, cmap='nipy_spectral', alpha=0.1, s=3)
+
+        # out[(pptr/pptr.max()*29).astype(int),(pptt/np.pi*2*29).astype(int),clrs]+=1
         # for u in np.unique(clrs):
         #     plt.scatter(pptx[clrs == u], ppty[clrs == u], alpha=0.1)
-        plt.scatter(
-            0,
-            0,
-            color='lime',
-            s=70,
-        )
+        # plt.scatter(
+        #     0,
+        #     0,
+        #     color='lime',
+        #     s=70,
+        # )
 
         # intensity = np.concatenate(intensity)
-        return np.roll(np.roll(out[1:, 1:], 50, axis=1), 50, axis=0)
+        return (pptt, pptr, clrs,)
 
     def knn_clean(
         self,
@@ -893,92 +1006,100 @@ class SpatialData(pd.DataFrame):
 
         return Dkl
 
-    def scatter_celltype_affinities(self, adata, celltypes_1,celltypes_2=None):
-        adata,sdata = synchronize(adata,self)
+    def scatter_celltype_affinities(self,
+                                    adata,
+                                    celltypes_1,
+                                    celltypes_2=None):
+        adata, sdata = synchronize(adata, self)
 
-def determine_gains(sc, spatial):
 
-    sc_genes = sc.var.index
-    counts_sc = np.array(sc.X.sum(0) / sc.X.sum()).flatten()
-    counts_spatial = np.array([spatial.get_count(g) for g in sc_genes])
-    counts_spatial = counts_spatial / counts_spatial.sum()
-    count_ratios = counts_sc / counts_spatial
-    return count_ratios
+# def determine_gains(sc, spatial):
 
-def plot_gains(sc, spatial):
+#     sc_genes = sc.var.index
+#     counts_sc = np.array(sc.X.sum(0) / sc.X.sum()).flatten()
+#     counts_spatial = np.array([spatial.get_count(g) for g in sc_genes])
+#     counts_spatial = counts_spatial / counts_spatial.sum()
+#     count_ratios = counts_sc / counts_spatial
+#     return count_ratios
 
-    sc_genes = sc.var.index
 
-    # counts_spatial_reindexed = counts_spatial [[spatial.get_sort_index(g) for g in sc.unique_genes_sorted]]
-    count_ratios = determine_gains(sc, spatial)
-    idcs = np.argsort(count_ratios)
+# def plot_gains(sc, spatial):
 
-    ax = plt.subplot(111)
+#     sc_genes = sc.var.index
 
-    span = np.linspace(0, 1, len(idcs))
-    clrs = np.stack([
-        span,
-        span * 0,
-        span[::-1],
-    ]).T
+#     # counts_spatial_reindexed = counts_spatial [[spatial.get_sort_index(g) for g in sc.unique_genes_sorted]]
+#     count_ratios = determine_gains(sc, spatial)
+#     idcs = np.argsort(count_ratios)
 
-    ax.barh(range(len(count_ratios)), np.log(count_ratios[idcs]), color=clrs)
+#     ax = plt.subplot(111)
 
-    ax.text(0,
-            len(idcs) + 3,
-            'lost in spatial ->',
-            ha='center',
-            fontsize=12,
-            color='red')
-    ax.text(0, -3, '<- lost in SC', ha='center', fontsize=12, color='lime')
+#     span = np.linspace(0, 1, len(idcs))
+#     clrs = np.stack([
+#         span,
+#         span * 0,
+#         span[::-1],
+#     ]).T
 
-    for i, gene in enumerate(sc_genes[idcs]):
-        if count_ratios[idcs[i]] < 1:
-            ha = 'left'
-            xpos = 0.05
-        else:
-            ha = 'right'
-            xpos = -0.05
-        ax.text(0, i, gene, ha=ha)
+#     ax.barh(range(len(count_ratios)), np.log(count_ratios[idcs]), color=clrs)
 
-    ax.set_yticks([], [])
+#     ax.text(0,
+#             len(idcs) + 3,
+#             'lost in spatial ->',
+#             ha='center',
+#             fontsize=12,
+#             color='red')
+#     ax.text(0, -3, '<- lost in SC', ha='center', fontsize=12, color='lime')
 
-def compare_counts(sc, spatial):
+#     for i, gene in enumerate(sc_genes[idcs]):
+#         if count_ratios[idcs[i]] < 1:
+#             ha = 'left'
+#             xpos = 0.05
+#         else:
+#             ha = 'right'
+#             xpos = -0.05
+#         ax.text(0, i, gene, ha=ha)
 
-    sc_genes = (sc.var.index)
-    sc_counts = (np.array(sc.X.sum(0)).flatten())
-    sc_count_idcs = np.argsort(sc_counts)
-    count_ratios = np.log(determine_gains(sc, spatial))
-    count_ratios -= count_ratios.min()
-    count_ratios /= count_ratios.max()
+#     ax.set_yticks([], [])
 
-    ax1 = plt.subplot(311)
-    ax1.set_title('compared molecule counts:')
-    ax1.bar(np.arange(len(sc_counts)), sc_counts[sc_count_idcs], color='grey')
-    ax1.set_ylabel('log(count) scRNAseq')
-    ax1.set_xticks(np.arange(len(sc_genes)),
-                   sc_genes[sc_count_idcs],
-                   rotation=90)
-    ax1.set_yscale('log')
 
-    ax2 = plt.subplot(312)
-    for i, gene in enumerate(sc_genes[sc_count_idcs]):
-        plt.plot(
-            [i, spatial.get_count_rank(gene)],
-            [1, 0],
-        )
-    plt.axis('off')
-    ax2.set_ylabel(' ')
+# def compare_counts(sc, spatial):
 
-    ax3 = plt.subplot(313)
-    spatial.plot_bars(ax3, color='grey')
-    ax3.invert_yaxis()
-    ax3.xaxis.tick_top()
-    ax3.xaxis.set_label_position('top')
-    ax3.set_ylabel('log(count) spatial')
+#     sc_genes = (sc.var.index)
+#     sc_counts = (np.array(sc.X.sum(0)).flatten())
+#     sc_count_idcs = np.argsort(sc_counts)
+#     count_ratios = np.log(determine_gains(sc, spatial))
+#     count_ratios -= count_ratios.min()
+#     count_ratios /= count_ratios.max()
 
-def get_count(adata, gene):
-    return (adata.X[:, adata.var.index == gene].sum())
+#     ax1 = plt.subplot(311)
+#     ax1.set_title('compared molecule counts:')
+#     ax1.bar(np.arange(len(sc_counts)), sc_counts[sc_count_idcs], color='grey')
+#     ax1.set_ylabel('log(count) scRNAseq')
+#     ax1.set_xticks(np.arange(len(sc_genes)),
+#                    sc_genes[sc_count_idcs],
+#                    rotation=90)
+#     ax1.set_yscale('log')
+
+#     ax2 = plt.subplot(312)
+#     for i, gene in enumerate(sc_genes[sc_count_idcs]):
+#         plt.plot(
+#             [i, spatial.get_count_rank(gene)],
+#             [1, 0],
+#         )
+#     plt.axis('off')
+#     ax2.set_ylabel(' ')
+
+#     ax3 = plt.subplot(313)
+#     spatial.plot_bars(ax3, color='grey')
+#     ax3.invert_yaxis()
+#     ax3.xaxis.tick_top()
+#     ax3.xaxis.set_label_position('top')
+#     ax3.set_ylabel('log(count) spatial')
+
+
+# def get_count(adata, gene):
+#     return (adata.X[:, adata.var.index == gene].sum())
+
 
 def compare_counts_cellwise(sc, spatial, cell_obs_label):
 
@@ -1029,10 +1150,16 @@ def compare_counts_cellwise(sc, spatial, cell_obs_label):
     ax3.xaxis.set_label_position('top')
     ax3.set_ylabel('log(count) spatial')
 
+
 def plot_overview(spatial):
     spatial.plot_overview()
 
-def synchronize(sc, spatial, mRNA_threshold_sc=10, mRNA_threshold_spatial=10, verbose=True):
+
+def synchronize(sc,
+                spatial,
+                mRNA_threshold_sc=10,
+                mRNA_threshold_spatial=10,
+                verbose=True):
 
     genes_sc = set(sc.var.index)
     genes_spatial = set(spatial.gene_classes)
@@ -1050,12 +1177,15 @@ def synchronize(sc, spatial, mRNA_threshold_sc=10, mRNA_threshold_spatial=10, ve
     genes_and = (genes_sc & genes_spatial)
 
     for gene in sorted(genes_and):
-        if verbose: print(gene)
+        if verbose:
+            print(gene)
         if (get_count(sc, gene) < mRNA_threshold_sc):
-            if verbose: print('Removing {}, low count in SC data'.format(gene))
+            if verbose:
+                print('Removing {}, low count in SC data'.format(gene))
             genes_and.remove(gene)
         elif spatial.get_count(gene) < mRNA_threshold_spatial:
-            if verbose: print('Removing {}, low count in spatial data'.format(gene))
+            if verbose:
+                print('Removing {}, low count in spatial data'.format(gene))
             genes_and.remove(gene)
 
     genes_and = sorted(genes_and)
