@@ -252,8 +252,7 @@ class ScanpyDataFrame():
         self.sd.stats = PointStatistics(self.sd)
 
         self.sd.graph = SpatialGraph(self.sd)
-        
-       
+              
 class GeneStatistics():
 
     @property
@@ -347,7 +346,7 @@ class ScStatistics(GeneStatistics):
             },
             index=gene_classes)
 
-        print(counts.shape,count_ranks.shape)
+        # print(counts.shape,count_ranks.shape)
 
 class SpatialIndexer():
 
@@ -455,6 +454,10 @@ class SpatialData(pd.DataFrame):
         return self.gene_id
 
     @property
+    def coordinates(self):
+        return (self.X,self.Y)
+
+    @property
     def counts(self):
         return self.stats['counts']
 
@@ -478,6 +481,10 @@ class SpatialData(pd.DataFrame):
     def background(self):
         if len(self.pixel_maps):
             return self.pixel_maps[0]
+    @property
+    def adata(self):
+        if self.scanpy is not None:
+            return self.scanpy.adata
 
     def __getitem__(self, *arg):
 
@@ -673,7 +680,7 @@ class SpatialData(pd.DataFrame):
                     self.Y,
                     c=c,
                     color=color,
-                    cmap='nipy_spectral',
+                    cmap='jet',
                     **kwargs)
 
     def plot_bars(self, axis=None, **kwargs):
@@ -768,7 +775,7 @@ class SpatialData(pd.DataFrame):
         clrs = []
         intensity = []
 
-        out = np.zeros((100, 100, len(self.gene_classes)))
+        out = np.zeros((100, 100, len(mRNAs_neighbor)))
 
         mask_center = np.logical_or.reduce(
             [neighbor_classes[:, 0] == self.get_id(m) for m in mRNAs_center])
@@ -815,8 +822,8 @@ class SpatialData(pd.DataFrame):
 
                 mask = (pptx[-1] >= -50) & (pptx[-1] < 50) & (
                     ppty[-1] >= -50) & (ppty[-1] < 50)
-                out[ppty[-1].astype(int)[mask], pptx[-1].astype(int)[mask],
-                    clrs[-1][mask]] += 1  #intensity[-1][mask]
+                # out[ppty[-1].astype(int)[mask], pptx[-1].astype(int)[mask],
+                #     clrs[-1][mask]] += 1  #intensity[-1][mask]
 
         #         break
 
@@ -827,6 +834,11 @@ class SpatialData(pd.DataFrame):
         pptr = (pptx**2+ppty**2)**0.5
 
         clrs = np.concatenate(clrs)
+        
+        scale = pptr.max()
+        for i in range(len(mRNAs_neighbor)):
+            mask = clrs==i
+            out[(pptt[mask]/1.5*100).astype(int),(pptr[mask]/scale*100).astype(int),i]+=1
 
         plt.axhline(0)
         plt.axvline(0)
