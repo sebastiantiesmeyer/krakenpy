@@ -154,7 +154,7 @@ class SsamLite(PixelMap):
 
         temp_vf = np.zeros((kernel.shape[0],
                             self.celltype_map.shape[1] + kernel.shape[0] + 10,
-                            len(self.sd.gene_classes)))
+                            len(self.sd.genes)))
 
         n = 0
 
@@ -274,8 +274,8 @@ class ScanpyDataFrame():
 
     def synchronize(self):
 
-        joined_genes = (self.stats.gene_classes
-                        & self.sd.gene_classes).sort_values()
+        joined_genes = (self.stats.genes
+                        & self.sd.genes).sort_values()
 
         # print(len(joined_genes))
 
@@ -283,16 +283,12 @@ class ScanpyDataFrame():
         self.adata = self.adata[:, joined_genes]
         self.stats = ScStatistics(self)
         self.sd.drop(index=list(
-            self.sd.index[~self.sd.gene_annotations.isin(joined_genes)]),
+            self.sd.index[~self.sd.G.isin(joined_genes)]),
             inplace=True)
 
         self.sd.stats = PointStatistics(self.sd)
 
         self.sd.graph = SpatialGraph(self.sd)
-<<<<<<< HEAD
-              
-class GeneStatistics():
-=======
 
 
     def determine_gains(self):
@@ -301,7 +297,6 @@ class GeneStatistics():
         counts_sc = np.array(self.adata.X.sum(0) / self.adata.X.sum()).flatten()
         
         counts_spatial = np.array([self.sd.stats.get_count(g) for g in sc_genes])
->>>>>>> 4ca77d649e40ee0c171f19eb2a885650fff8c736
 
         counts_spatial = counts_spatial / counts_spatial.sum()
         count_ratios = counts_sc / counts_spatial
@@ -352,7 +347,8 @@ class GeneStatistics():
         sc_genes = (self.adata.var.index)
         sc_counts = (np.array(self.adata.X.sum(0)).flatten())
         sc_count_idcs = np.argsort(sc_counts)
-        count_ratios = np.log(self.determine_gains())
+        count_ratios = np.log(s
+        elf.determine_gains())
         count_ratios -= count_ratios.min()
         count_ratios /= count_ratios.max()
 
@@ -391,25 +387,25 @@ class GeneStatistics(pd.DataFrame):
         return self.data.counts[self.stats.count_indices]
 
     @property
-    def gene_classes(self):
+    def genes(self):
         return self.index
 
     def get_count(self, gene):
-        if gene in self.gene_classes.values:
-            return int(self.counts[self.gene_classes == gene])
+        if gene in self.genes.values:
+            return int(self.counts[self.genes == gene])
 
     def get_id(self, gene_name):
-        return int(self.gene_ids[self.gene_classes == gene_name])
+        return int(self.gene_ids[self.genes == gene_name])
 
     def get_count_rank(self, gene):
-        if gene in self.gene_classes.values:
-            return int(self.count_ranks[self.gene_classes == gene])
+        if gene in self.genes.values:
+            return int(self.count_ranks[self.genes == gene])
 
 
 class PointStatistics(GeneStatistics):
     def __init__(self, sd):
-        gene_classes, indicers, inverse, counts = np.unique(
-            sd['gene_annotations'],
+        genes, indicers, inverse, counts = np.unique(
+            sd['G'],
             return_index=True,
             return_inverse=True,
             return_counts=True,
@@ -423,9 +419,9 @@ class PointStatistics(GeneStatistics):
                 'counts': counts,
                 'count_ranks': count_ranks,
                 'count_indices': count_idcs,
-                'gene_ids': np.arange(len(gene_classes))
+                'gene_ids': np.arange(len(genes))
             },
-            index=gene_classes)
+            index=genes)
 
         sd['gene_id'] = inverse
 
@@ -437,7 +433,7 @@ class ScStatistics(GeneStatistics):
     def __init__(self, scanpy_df):
 
         counts = np.array(scanpy_df.adata.X.sum(0)).squeeze()
-        gene_classes = scanpy_df.adata.var.index
+        genes = scanpy_df.adata.var.index
 
         count_idcs = np.argsort(counts)
         count_ranks = np.argsort(count_idcs)
@@ -447,15 +443,11 @@ class ScStatistics(GeneStatistics):
                 'counts': counts,
                 'count_ranks': count_ranks,
                 'count_indices': count_idcs,
-                'gene_ids': np.arange(len(gene_classes))
+                'gene_ids': np.arange(len(genes))
             },
-            index=gene_classes)
+            index=genes)
   
 
-<<<<<<< HEAD
-        # print(counts.shape,count_ranks.shape)
-=======
->>>>>>> 4ca77d649e40ee0c171f19eb2a885650fff8c736
 
 class SpatialIndexer():
 
@@ -502,7 +494,7 @@ class SpatialIndexer():
         for pm in self.df.pixel_maps:
             pixel_maps.append(pm[xlims[0]:xlims[1], ylims[0]:ylims[1]])
 
-        return SpatialData(self.df.gene_annotations[mask],
+        return SpatialData(self.df.G[mask],
                            self.df.X[mask] - start_x,
                            self.df.Y[mask] - start_y, pixel_maps,
                            self.df.scanpy.adata, self.df.synchronize)
@@ -524,7 +516,7 @@ class SpatialIndexer():
 class SpatialData(pd.DataFrame):
 
     def __init__(self,
-                 gene_annotations,
+                 G,
                  x_coordinates,
                  y_coordinates,
                  pixel_maps=[],
@@ -533,7 +525,7 @@ class SpatialData(pd.DataFrame):
 
         # Initiate 'own' spot data:
         super(SpatialData, self).__init__({
-            'gene_annotations': gene_annotations,
+            'G': G,
             'X': x_coordinates,
             'Y': y_coordinates
         })
@@ -583,11 +575,11 @@ class SpatialData(pd.DataFrame):
         return self.stats.counts[self.stats.count_indices]
 
     @property
-    def gene_classes_sorted(self):
-        return self.gene_classes[self.stats.count_indices]
+    def genes_sorted(self):
+        return self.genes[self.stats.count_indices]
 
     @property
-    def gene_classes(self):
+    def genes(self):
         return self.stats.index
 
     @property
@@ -636,7 +628,7 @@ class SpatialData(pd.DataFrame):
                 scanpy = None
                 synchronize = None
 
-            new_frame = SpatialData(new_data.gene_annotations,
+            new_frame = SpatialData(new_data.G,
                                     new_data.X,
                                     new_data.Y,
                                     self.pixel_maps,
@@ -662,7 +654,7 @@ class SpatialData(pd.DataFrame):
             self.scanpy.synchronize()
 
     def get_id(self, gene_name):
-        return int(self.stats.gene_ids[self.gene_classes == gene_name])
+        return int(self.stats.gene_ids[self.genes == gene_name])
 
     def knn_entropy(self, n_neighbors=4):
 
@@ -673,9 +665,9 @@ class SpatialData(pd.DataFrame):
         for i in range(indices.shape[1]):
             knn_cells[:, i] = self['gene_id'].iloc[indices[:, i]]
 
-        H = np.zeros((len(self.gene_classes), ))
+        H = np.zeros((len(self.genes), ))
 
-        for i, gene in enumerate(self.gene_classes):
+        for i, gene in enumerate(self.genes):
             x = knn_cells[self['gene_id'] == i]
             _, n_x = np.unique(x[:, 1:], return_counts=True)
             p_x = n_x / n_x.sum()
@@ -722,13 +714,13 @@ class SpatialData(pd.DataFrame):
             ])
 
         axd['bar'].set_xticks(range(len(H)),
-                              [self.gene_classes[h] for h in idcs],
+                              [self.genes[h] for h in idcs],
                               rotation=90)
         axd['bar'].set_ylabel('knn entropy, k=' + str(n_neighbors))
 
         for i in range(8):
             idx = idcs[dem_plots[i]]
-            gene = self.gene_classes[idx]
+            gene = self.genes[idx]
             plot_name = 'scatter_' + str(i + 1)
             axd[plot_name].set_title(gene)
             axd[plot_name].scatter(self.X, self.Y, color=(0.5, 0.5, 0.5, 0.1))
@@ -790,8 +782,8 @@ class SpatialData(pd.DataFrame):
         axis.set_yscale('log')
 
         axis.set_xticks(
-            np.arange(len(self.gene_classes_sorted)),
-            self.gene_classes_sorted,
+            np.arange(len(self.genes_sorted)),
+            self.genes_sorted,
             # fontsize=12,
             rotation=90)
 
@@ -821,7 +813,7 @@ class SpatialData(pd.DataFrame):
 
         for i in range(4):
             idx = self.stats.count_indices[scatter_idcs[i]]
-            gene = self.gene_classes[idx]
+            gene = self.genes[idx]
             plot_name = 'scatter_' + str(i + 1)
             axd[plot_name].set_title(gene)
             axd[plot_name].scatter(self.X, self.Y, color=(0.5, 0.5, 0.5, 0.1))
@@ -861,9 +853,9 @@ class SpatialData(pd.DataFrame):
     ):
 
         if mRNAs_center is None:
-            mRNAs_center = self.gene_classes
+            mRNAs_center = self.genes
         if mRNAs_neighbor is None:
-            mRNAs_neighbor = self.gene_classes
+            mRNAs_neighbor = self.genes
 
         self.graph.update_knn(n_neighbors=n_neighbors)
         neighbors = self.graph.neighbors
@@ -875,11 +867,7 @@ class SpatialData(pd.DataFrame):
         clrs = []
         intensity = []
 
-<<<<<<< HEAD
-        out = np.zeros((100, 100, len(mRNAs_neighbor)))
-=======
-        out = np.zeros((30, 30, len(self.gene_classes)))
->>>>>>> 4ca77d649e40ee0c171f19eb2a885650fff8c736
+        out = np.zeros((30, 30, len(self.genes)))
 
         mask_center = np.logical_or.reduce(
             [neighbor_classes[:, 0] == self.get_id(m) for m in mRNAs_center])
@@ -924,17 +912,10 @@ class SpatialData(pd.DataFrame):
                 clrs.append(self.gene_ids.iloc[n][mask])
                 # intensity.append(1 / distances_filtered[i_neighbor])
 
-<<<<<<< HEAD
-                mask = (pptx[-1] >= -50) & (pptx[-1] < 50) & (
-                    ppty[-1] >= -50) & (ppty[-1] < 50)
-                # out[ppty[-1].astype(int)[mask], pptx[-1].astype(int)[mask],
-                #     clrs[-1][mask]] += 1  #intensity[-1][mask]
-=======
                 # mask = (pptx[-1] >= -50) & (pptx[-1] < 50) & (
                 #     ppty[-1] >= -50) & (ppty[-1] < 50)
                 # out[ppty[-1].astype(int)[mask], pptx[-1].astype(int)[mask],
                 #     clrs[-1][mask]] += 1  # intensity[-1][mask]
->>>>>>> 4ca77d649e40ee0c171f19eb2a885650fff8c736
 
         #         break
 
@@ -976,7 +957,7 @@ class SpatialData(pd.DataFrame):
         self.graph.update_knn(n_neighbors=n_neighbors)
         types = self.graph.neighbor_types
         count_matrix = sparse.lil_matrix(
-            (types.shape[0], self.gene_classes.shape[0]))
+            (types.shape[0], self.genes.shape[0]))
         for i, t in enumerate(types):
             classes, counts = (np.unique(t[:n_neighbors], return_counts=True))
             count_matrix[i, classes] = counts / counts.sum()
@@ -988,7 +969,7 @@ class SpatialData(pd.DataFrame):
         count_matrix_inv = count_matrix.copy()
         count_matrix_inv.data = 1 / (count_matrix.data)
 
-        prototypes = np.zeros((len(self.gene_classes), ) * 2)
+        prototypes = np.zeros((len(self.genes), ) * 2)
         for i in range(prototypes.shape[0]):
             prototypes[i] = count_matrix[self.gene_ids == i].sum(0)
         prototypes /= prototypes.sum(0)
@@ -1162,7 +1143,7 @@ def synchronize(sc,
                 verbose=True):
 
     genes_sc = set(sc.var.index)
-    genes_spatial = set(spatial.gene_classes)
+    genes_spatial = set(spatial.genes)
 
     genes_xor = genes_sc.symmetric_difference(genes_spatial)
 
@@ -1193,4 +1174,4 @@ def synchronize(sc,
     # spatial.filter(genes_and)
     sc = sc[:, genes_and]
 
-    return (sc, spatial[spatial.gene_annotations.isin(genes_and)])
+    return (sc, spatial[spatial.G.isin(genes_and)])
