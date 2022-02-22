@@ -1,45 +1,32 @@
-# from gc import collect
-# from math import dist
-# from sqlite3 import SQLITE_CREATE_TABLE
-# from turtle import back, distance, update
-# from types import CellType
-# from collections.abc import Iterable
+
 from __future__ import annotations
-from ntpath import join
-from os import sync
 
-from typing import Union, Any, Optional, cast
+import warnings
+warnings.simplefilter(action='ignore', category=UserWarning)
 
+from typing import Union
 
 from matplotlib import pyplot as plt
 from matplotlib.patches import ConnectionPatch
-from numpy.lib.arraysetops import unique
-from numpy.lib.type_check import _nan_to_num_dispatcher
+
 from scipy import sparse
 import collections
 import scanpy as sc
 import anndata
+import scipy
 
 import pandas as pd
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
-# from scikit-image import , resize, downscale_local_mean
-from skimage.transform import rescale
 
 
 class PixelMap():
 
     def __init__(self: PixelMap,
                  pixel_data: np.ndarray,
-                 name: str = None,
-                 upscale: float = 1.0,
-                 pixel_data_original=None) -> None:
+                 upscale: float = 1.0,) -> None:
 
         self.data = pixel_data
-        if pixel_data_original is not None:
-            self.pixeld_data_original = pixel_data_original
-        else:
-            self.pixeld_data_original = pixel_data
 
         self.n_channels = 1 if len(
             pixel_data.shape) == 2 else pixel_data.shape[-1]
@@ -58,12 +45,15 @@ class PixelMap():
 
     def imshow(self, **kwargs) -> None:
         extent = np.array(self.extent)
-        # print(extent)
 
-        plt.imshow(self.data**0.5, extent=extent[[0, 3, 1, 2]], **kwargs)
+        if (len(self.data.shape)>2) and (self.data.shape[2]>4):
+            data = self.data.sum(-1)
+        else:
+            data = self.data
+
+        plt.imshow(data, extent=extent[[0, 3, 1, 2]], **kwargs)
 
     def __getitem__(self, indices: Union[slice, collections.Iterable[slice]]):
-        # print(indices)
 
         if not isinstance(indices, collections.Iterable):
             index_x = indices
@@ -105,76 +95,39 @@ class PixelMap():
             upscale=self.scale,
         )
 
-
-class SsamLite(PixelMap):
-
-    def __init__(self,
-                 sd: SpatialData,
+class KDEProjection(PixelMap):
+    def __init__(self,sd: SpatialData,
                  bandwidth: float = 3.0,
                  threshold_vf_norm: float = 1.0,
                  threshold_p_corr: float = 0.5,
                  upscale: float = 1) -> None:
-
+        
         self.sd = sd
         self.bandwidth = bandwidth
         self.threshold_vf_norm = threshold_vf_norm
         self.threshold_p_corr = threshold_p_corr
 
-        self.extent = tuple(self.sd.background.extent)
-        self.extent_shape = (int(self.extent[1] - self.extent[0]),
-                             int(self.extent[3] - self.extent[2]))
-
         self.scale = upscale
-        self.data = np.zeros(
-            (int(self.shape[0] * self.scale), int(self.shape[1] * self.scale)))
-        # self.data=self.celltype_map
-        # self.run_algorithm()
 
-    @property
-    def signatures(self) -> np.ndarray:
-        return self.sd.scanpy.signatures
+        super().__init__(self.run_kde(), upscale)
 
-    def run_algorithm(self) -> None:
 
-        # from tqdm import tqdm_notebook
 
-        kernel = self.generate_kernel(15, self.scale)
+    def run_kde(self) -> None:
 
-        X_int = np.array(self.sd.Y * self.scale).astype(int)
-        Y_int = np.array(self.sd.X * self.scale).astype(int)
-        sort_idcs = np.argsort(X_int)
-        X_ = X_int[sort_idcs]
-        Y_ = Y_int[sort_idcs]
+        kernel = self.generate_kernel(self.bandwidth*3, self.scale)
 
-        uniques, inv_idcs = np.unique(X_, return_index=True)
+        x_int = np.array(self.sd.y * self.scale).astype(int)
+        y_int = np.array(self.sd.x * self.scale).astype(int)
+        genes = self.sd.gene_ids
 
-        gene_ids = np.array(self.sd.gene_ids)[sort_idcs]
+        vf = np.zeros((x_int.max()+kernel.shape[0]+1,y_int.max()+kernel.shape[0]+1,len(self.sd.genes)))
 
-        print(self.celltype_map.shape)
-
-        temp_vf = np.zeros((kernel.shape[0],
-                            self.celltype_map.shape[1] + kernel.shape[0] + 10,
-                            len(self.sd.gene_classes)))
-
-        n = 0
-
-        for i, u_ in enumerate(uniques[:-1]):
-
-            _u = uniques[i + 1]
-
-            u_u = min(_u - u_, kernel.shape[0])
-
-            y = Y_[inv_idcs[i]:inv_idcs[i + 1]]
-            ids = gene_ids[inv_idcs[i]:inv_idcs[i + 1]]
-
-            for i, k in enumerate(kernel):
-                temp_vf[:, y + i, ids] += k[:, None]
-
-            self.celltype_map[u_:u_ + u_u] = temp_vf[-u_u:, 19:].sum(-1)
-
-            temp_vf[-u_u:] = 0
-
-            temp_vf = np.roll(temp_vf, u_u, axis=0)
+        for x,y,g in zip(x_int,y_int,genes):
+            # print(x,y,vf.shape,kernel.shape)
+            vf[x:x+kernel.shape[0],y:y+kernel.shape[1],g]+=kernel
+            
+        return vf[kernel.shape[0]//2:-kernel.shape[0]//2,kernel.shape[1]//2:-kernel.shape[1]//2]
 
     def generate_kernel(self, bandwidth: float, scale: float = 1) -> np.ndarray:
 
@@ -186,6 +139,92 @@ class SsamLite(PixelMap):
 
         return 1 / (2 * np.pi)**0.5 * np.exp(-0.5 * ((X**2 + Y**2)**0.5)**2)
 
+
+class CellTypeMap(PixelMap):
+    def __init__(self,data,celltype_labels,*args,**kwargs):
+        
+        # .super().
+
+        pass
+    # def __init__(self: PixelMap, pixel_data: np.ndarray, upscale: float = 1) -> None:
+    #     super().__init__(pixel_data, upscale)
+
+# class SsamLite(PixelMap):
+
+#     def __init__(self,
+#                  sd: SpatialData,
+#                  bandwidth: float = 3.0,
+#                  threshold_vf_norm: float = 1.0,
+#                  threshold_p_corr: float = 0.5,
+#                  upscale: float = 1) -> None:
+
+#         self.sd = sd
+#         self.bandwidth = bandwidth
+#         self.threshold_vf_norm = threshold_vf_norm
+#         self.threshold_p_corr = threshold_p_corr
+
+#         self.extent = tuple(self.sd.background.extent)
+#         self.extent_shape = (int(self.extent[1] - self.extent[0]),
+#                              int(self.extent[3] - self.extent[2]))
+
+#         self.scale = upscale
+#         self.data = np.zeros(
+#             (int(self.shape[0] * self.scale), int(self.shape[1] * self.scale)))
+
+
+#     @property
+#     def signatures(self) -> np.ndarray:
+#         return self.sd.scanpy.signatures
+
+#     def run_algorithm(self) -> None:
+
+#         # from tqdm import tqdm_notebook
+
+#         kernel = self.generate_kernel(15, self.scale)
+
+#         X_int = np.array(self.sd.y * self.scale).astype(int)
+#         Y_int = np.array(self.sd.x * self.scale).astype(int)
+#         sort_idcs = np.argsort(X_int)
+#         X_ = X_int[sort_idcs]
+#         Y_ = Y_int[sort_idcs]
+
+#         uniques, inv_idcs = np.unique(X_, return_index=True)
+
+#         gene_ids = np.array(self.sd.gene_ids)[sort_idcs]
+
+#         print(self.celltype_map.shape)
+
+#         temp_vf = np.zeros((kernel.shape[0],
+#                             self.celltype_map.shape[1] + kernel.shape[0] + 10,
+#                             len(self.sd.genes)))
+
+#         for i, u_ in enumerate(uniques[:-1]):
+
+#             _u = uniques[i + 1]
+
+#             u_u = min(_u - u_, kernel.shape[0])
+
+#             y = Y_[inv_idcs[i]:inv_idcs[i + 1]]
+#             ids = gene_ids[inv_idcs[i]:inv_idcs[i + 1]]
+
+#             for i, k in enumerate(kernel):
+#                 temp_vf[:, y + i, ids] += k[:, None]
+
+#             self.celltype_map[u_:u_ + u_u] = temp_vf[-u_u:, 19:].sum(-1)
+
+#             temp_vf[-u_u:] = 0
+
+#             temp_vf = np.roll(temp_vf, u_u, axis=0)
+
+#     def generate_kernel(self, bandwidth: float, scale: float = 1) -> np.ndarray:
+
+#         kernel_width_in_pixels = int(bandwidth * scale *
+#                                      6)  # kernel is 3 sigmas wide.
+
+#         span = np.linspace(-3, 3, kernel_width_in_pixels)
+#         X, Y = np.meshgrid(span, span)
+
+#         return 1 / (2 * np.pi)**0.5 * np.exp(-0.5 * ((X**2 + Y**2)**0.5)**2)
 
 class SpatialGraph():
 
@@ -227,7 +266,7 @@ class SpatialGraph():
                     self._neighbor_types[:, :n_neighbors])
         else:
 
-            coordinates = np.stack([self.df.X, self.df.Y]).T
+            coordinates = np.stack([self.df.x, self.df.y]).T
             knn = NearestNeighbors(n_neighbors=n_neighbors)
             knn.fit(coordinates)
             self._distances, self._neighbors = knn.kneighbors(coordinates)
@@ -237,6 +276,98 @@ class SpatialGraph():
 
             return self.distances, self.neighbors, self.neighbor_types
 
+    def knn_entropy(self, n_neighbors=4):
+
+        self.update_knn(n_neighbors=n_neighbors)
+        indices = self.neighbors  # (n_neighbors=n_neighbors)
+
+        knn_cells = np.zeros_like(indices)
+        for i in range(indices.shape[1]):
+            knn_cells[:, i] = self.df['gene_id'].iloc[indices[:, i]]
+
+        H = np.zeros((len(self.df.genes), ))
+
+        for i, gene in enumerate(self.df.genes):
+            x = knn_cells[self.df['gene_id'] == i]
+            _, n_x = np.unique(x[:, 1:], return_counts=True)
+            p_x = n_x / n_x.sum()
+            h_x = -(p_x * np.log2(p_x)).sum()
+            H[i] = h_x
+
+        return (H)
+
+    def plot_entropy(self, n_neighbors=4):
+
+        H = self.knn_entropy(n_neighbors)
+
+        idcs = np.argsort(H)
+        plt.figure(figsize=(25, 25))
+
+        fig, axd = plt.subplot_mosaic([
+            ['scatter_1', 'scatter_2', 'scatter_3', 'scatter_4'],
+            ['bar', 'bar', 'bar', 'bar'],
+            ['scatter_5', 'scatter_6', 'scatter_7', 'scatter_8'],
+        ],
+            figsize=(11, 7),
+            constrained_layout=True)
+
+        dem_plots = np.array([
+            0,
+            2,
+            len(H) - 3,
+            len(H) - 1,
+            1,
+            int(len(H) / 2),
+            int(len(H) / 2) + 1,
+            len(H) - 2,
+        ])
+        colors = ('royalblue', 'goldenrod', 'red', 'purple', 'lime',
+                  'turquoise', 'green', 'yellow')
+
+        axd['bar'].bar(
+            range(len(H)),
+            H[idcs],
+            color=[
+                colors[np.where(
+                    dem_plots == i)[0][0]] if i in dem_plots else 'grey'
+                for i in range(len(self.df.stats.counts))
+            ])
+
+        axd['bar'].set_xticks(range(len(H)),
+                              [self.df.genes[h] for h in idcs],
+                              rotation=90)
+        axd['bar'].set_ylabel('knn entropy, k=' + str(n_neighbors))
+
+        for i in range(8):
+            idx = idcs[dem_plots[i]]
+            gene = self.df.genes[idx]
+            plot_name = 'scatter_' + str(i + 1)
+            axd[plot_name].set_title(gene)
+            axd[plot_name].scatter(self.df.x, self.df.y, color=(0.5, 0.5, 0.5, 0.1))
+            axd[plot_name].scatter(self.df.x[self.df['gene_id'] == idx],
+                                   self.df.y[self.df['gene_id'] == idx],
+                                   color=colors[i],
+                                   marker='.')
+            axd[plot_name].set_xticks([], [])
+            # if i>0:
+            axd[plot_name].set_yticks([], [])
+
+            if i < 4:
+                y_ = (H[idcs])[i]
+                _y = 0
+            else:
+                y_ = 0
+                _y = 1
+
+            con = ConnectionPatch(xyA=(dem_plots[i], y_),
+                                  coordsA=axd['bar'].transData,
+                                  xyB=(np.mean(axd[plot_name].get_xlim()),
+                                       axd[plot_name].get_ylim()[_y]),
+                                  coordsB=axd[plot_name].transData,
+                                  color='white',
+                                  linewidth=1,
+                                  linestyle='dotted')
+            fig.add_artist(con)
 
 class ScanpyDataFrame():
 
@@ -262,7 +393,7 @@ class ScanpyDataFrame():
 
         for i, label in enumerate(self.celltype_labels):
             self.signature_matrix[i] = np.array(
-                self.adata[self.adata.obs[celltype_obs_marker] == label].X.sum(
+                self.adata[self.adata.obs[celltype_obs_marker] == label].x.sum(
                     0)).flatten()
 
         self.signature_matrix = self.signature_matrix - self.signature_matrix.mean(
@@ -274,8 +405,7 @@ class ScanpyDataFrame():
 
     def synchronize(self):
 
-        joined_genes = (self.stats.gene_classes
-                        & self.sd.gene_classes).sort_values()
+        joined_genes = (self.stats.genes.intersection(self.sd.genes)).sort_values()
 
         # print(len(joined_genes))
 
@@ -283,7 +413,7 @@ class ScanpyDataFrame():
         self.adata = self.adata[:, joined_genes]
         self.stats = ScStatistics(self)
         self.sd.drop(index=list(
-            self.sd.index[~self.sd.gene_annotations.isin(joined_genes)]),
+            self.sd.index[~self.sd.g.isin(joined_genes)]),
             inplace=True)
 
         self.sd.stats = PointStatistics(self.sd)
@@ -307,7 +437,6 @@ class ScanpyDataFrame():
 
         sc_genes = self.adata.var.index
 
-        # counts_spatial_reindexed = counts_spatial [[spatial.get_sort_index(g) for g in sc.unique_genes_sorted]]
         count_ratios = self.determine_gains()
         idcs = np.argsort(count_ratios)
 
@@ -376,6 +505,52 @@ class ScanpyDataFrame():
         ax3.xaxis.set_label_position('top')
         ax3.set_ylabel('log(count) spatial')
 
+    def score_affinity(self,labels_1,labels_2=None,scanpy_obs_label='celltype'):
+
+        if labels_2 is None:
+            labels_2 = (self.adata.obs[~self.adata.obs[scanpy_obs_label].isin(labels_1)])[scanpy_obs_label]
+        
+        mask_1 = self.adata.obs[scanpy_obs_label].isin(labels_1)
+        mask_2 = self.adata.obs[scanpy_obs_label].isin(labels_2)
+    
+        samples_1 = self.adata[mask_1,]
+        samples_2 = self.adata[mask_2,]
+
+        counts_1 = np.array(samples_1.X.mean(0)).flatten()
+        counts_2 = np.array(samples_2.X.mean(0)).flatten()
+
+        return np.log((counts_1+0.1)/(counts_2+0.1))
+
+        
+        clrs = np.zeros((len(self.sd),))
+    
+        for g in self.sd.genes:
+    #         if g in adata.var.index:
+            clrs[self.sd.g==g]=ratios[samples_1.var.index==g]
+                
+    #     extreme = np.max((ratios.max(),-ratios.min()))
+        
+    #     fig = plt.figure(figsize=(70,70))
+    # #     fig = plt.figure(figsize=(100,100))
+        
+    #     ax = plt.subplot(111)
+    # #     ax.imshow(1-(fitc[0:-1:5,0:-1:5].sum(-1).T**0.1),cmap='Greys')
+    #     sdata.background.imshow(cmap='Greys')
+    #     cax = ax.scatter(sdata.x,sdata.y,c=clrs,cmap='seismic',alpha=0.6, vmin=-extreme,vmax=extreme)
+
+    #     ax.set_title('differential mRNA <-> celltype mappings: '+filename, fontsize=90)
+
+    #     # Add colorbar, make sure to specify tick locations to match desired ticklabels
+    #     cbar = fig.colorbar(cax, ticks=[extreme, -extreme])
+    #     cbar.ax.set_yticklabels(['\n'.join(labels0),'\n'.join(labels1),],fontsize=60)
+        
+    #     handlers = [plt.scatter([],[],color='k') for f in (meta.columns)]
+    #     plt.legend(handlers,[f"{idx}:{meta[idx].values[0]}" for i,idx in enumerate(meta.columns)],
+    #             prop={'size': 60},loc='upper left')                              
+                                
+
+
+        return None
 
 class GeneStatistics(pd.DataFrame):
     def __init__(self, *args,**kwargs):
@@ -386,25 +561,24 @@ class GeneStatistics(pd.DataFrame):
         return self.data.counts[self.stats.count_indices]
 
     @property
-    def gene_classes(self):
+    def genes(self):
         return self.index
 
     def get_count(self, gene):
-        if gene in self.gene_classes.values:
-            return int(self.counts[self.gene_classes == gene])
+        if gene in self.genes.values:
+            return int(self.counts[self.genes == gene])
 
     def get_id(self, gene_name):
-        return int(self.gene_ids[self.gene_classes == gene_name])
+        return int(self.gene_ids[self.genes == gene_name])
 
     def get_count_rank(self, gene):
-        if gene in self.gene_classes.values:
-            return int(self.count_ranks[self.gene_classes == gene])
-
+        if gene in self.genes.values:
+            return int(self.count_ranks[self.genes == gene])
 
 class PointStatistics(GeneStatistics):
     def __init__(self, sd):
-        gene_classes, indicers, inverse, counts = np.unique(
-            sd['gene_annotations'],
+        genes, indicers, inverse, counts = np.unique(
+            sd['g'],
             return_index=True,
             return_inverse=True,
             return_counts=True,
@@ -418,21 +592,20 @@ class PointStatistics(GeneStatistics):
                 'counts': counts,
                 'count_ranks': count_ranks,
                 'count_indices': count_idcs,
-                'gene_ids': np.arange(len(gene_classes))
+                'gene_ids': np.arange(len(genes))
             },
-            index=gene_classes)
+            index=genes)
 
         sd['gene_id'] = inverse
 
         sd.graph = SpatialGraph(self)
-
 
 class ScStatistics(GeneStatistics):
 
     def __init__(self, scanpy_df):
 
         counts = np.array(scanpy_df.adata.X.sum(0)).squeeze()
-        gene_classes = scanpy_df.adata.var.index
+        genes = scanpy_df.adata.var.index
 
         count_idcs = np.argsort(counts)
         count_ranks = np.argsort(count_idcs)
@@ -442,12 +615,10 @@ class ScStatistics(GeneStatistics):
                 'counts': counts,
                 'count_ranks': count_ranks,
                 'count_indices': count_idcs,
-                'gene_ids': np.arange(len(gene_classes))
+                'gene_ids': np.arange(len(genes))
             },
-            index=gene_classes)
+            index=genes)
   
-
-
 class SpatialIndexer():
 
     def __init__(self, df):
@@ -456,8 +627,8 @@ class SpatialIndexer():
     @property
     def shape(self):
         if self.df.background is None:
-            return np.ceil(self.df.X.max() - self.df.X.min()).astype(
-                int), np.ceil(self.df.Y.max() - self.df.Y.min()).astype(int)
+            return np.ceil(self.df.x.max() - self.df.x.min()).astype(
+                int), np.ceil(self.df.y.max() - self.df.y.min()).astype(int)
         else:
             return self.df.background.shape
 
@@ -473,7 +644,7 @@ class SpatialIndexer():
 
     def join_cropping_mask(self, xlims, ylims):
         return self.create_cropping_mask(
-            *xlims, self.df.X) & self.create_cropping_mask(*ylims, self.df.Y)
+            *xlims, self.df.x) & self.create_cropping_mask(*ylims, self.df.y)
 
     def crop(self, xlims, ylims):
 
@@ -493,9 +664,9 @@ class SpatialIndexer():
         for pm in self.df.pixel_maps:
             pixel_maps.append(pm[xlims[0]:xlims[1], ylims[0]:ylims[1]])
 
-        return SpatialData(self.df.gene_annotations[mask],
-                           self.df.X[mask] - start_x,
-                           self.df.Y[mask] - start_y, pixel_maps,
+        return SpatialData(self.df.g[mask],
+                           self.df.x[mask] - start_x,
+                           self.df.y[mask] - start_y, pixel_maps,
                            self.df.scanpy.adata, self.df.synchronize)
 
     def __getitem__(self, indices):
@@ -511,11 +682,10 @@ class SpatialIndexer():
 
         return self.crop(xlims, ylims)
 
-
 class SpatialData(pd.DataFrame):
 
-    def __init__(self,
-                 gene_annotations,
+    def __init__(self,  
+                 G,
                  x_coordinates,
                  y_coordinates,
                  pixel_maps=[],
@@ -524,12 +694,12 @@ class SpatialData(pd.DataFrame):
 
         # Initiate 'own' spot data:
         super(SpatialData, self).__init__({
-            'gene_annotations': gene_annotations,
-            'X': x_coordinates,
-            'Y': y_coordinates
+            'g': G,
+            'x': x_coordinates,
+            'y': y_coordinates
         })
 
-        # self.reset_index()
+        self['g']=self['g'].astype('category')
 
         # Initiate pixel maps:
         self.pixel_maps = []
@@ -552,14 +722,18 @@ class SpatialData(pd.DataFrame):
                 self.sync_scanpy()
         else:
             self.scanpy=None
-        # self.update_stats()
 
-        # if (scanpy is not None) 
-        #     # self.sync_scanpy()
+        # self.obsm = {"spatial":np.array(self.coordinates).T}
+        # self.obs = pd.DataFrame({'gene':self.g})
+        self.uns={}
 
     @property
     def gene_ids(self):
         return self.gene_id
+
+    @property
+    def coordinates(self):
+        return (self.x,self.y)
 
     @property
     def counts(self):
@@ -570,11 +744,11 @@ class SpatialData(pd.DataFrame):
         return self.stats.counts[self.stats.count_indices]
 
     @property
-    def gene_classes_sorted(self):
-        return self.gene_classes[self.stats.count_indices]
+    def genes_sorted(self):
+        return self.genes[self.stats.count_indices]
 
     @property
-    def gene_classes(self):
+    def genes(self):
         return self.stats.index
 
     @property
@@ -585,6 +759,27 @@ class SpatialData(pd.DataFrame):
     def background(self):
         if len(self.pixel_maps):
             return self.pixel_maps[0]
+    @property
+    def adata(self):
+        if self.scanpy is not None:
+            return self.scanpy.adata
+
+    @property
+    def X(self):
+        return scipy.sparse.csc_matrix((np.ones(len(self.g),),(np.arange(len(self.g)),np.array(self.gene_ids).flatten())),
+                        shape=(len(self.g),self.genes.shape[0],))
+
+    @property
+    def var(self):
+        return pd.DataFrame(index=self.stats.genes)
+
+    @property
+    def obs(self):
+        return  pd.DataFrame({'gene':self.g}).astype(str).astype('category')
+
+    @property
+    def obsm(self):
+        return {"spatial":np.array(self.coordinates).T}
 
     def __getitem__(self, *arg):
 
@@ -619,9 +814,9 @@ class SpatialData(pd.DataFrame):
                 scanpy = None
                 synchronize = None
 
-            new_frame = SpatialData(new_data.gene_annotations,
-                                    new_data.X,
-                                    new_data.Y,
+            new_frame = SpatialData(new_data.g,
+                                    new_data.x,
+                                    new_data.y,
                                     self.pixel_maps,
                                     scanpy=scanpy,
                                     synchronize=synchronize)
@@ -645,100 +840,8 @@ class SpatialData(pd.DataFrame):
             self.scanpy.synchronize()
 
     def get_id(self, gene_name):
-        return int(self.stats.gene_ids[self.gene_classes == gene_name])
+        return int(self.stats.gene_ids[self.genes == gene_name])
 
-    def knn_entropy(self, n_neighbors=4):
-
-        self.graph.update_knn(n_neighbors=n_neighbors)
-        indices = self.graph.neighbors  # (n_neighbors=n_neighbors)
-
-        knn_cells = np.zeros_like(indices)
-        for i in range(indices.shape[1]):
-            knn_cells[:, i] = self['gene_id'].iloc[indices[:, i]]
-
-        H = np.zeros((len(self.gene_classes), ))
-
-        for i, gene in enumerate(self.gene_classes):
-            x = knn_cells[self['gene_id'] == i]
-            _, n_x = np.unique(x[:, 1:], return_counts=True)
-            p_x = n_x / n_x.sum()
-            h_x = -(p_x * np.log2(p_x)).sum()
-            H[i] = h_x
-
-        return (H)
-
-    def plot_entropy(self, n_neighbors=4):
-
-        H = self.knn_entropy(n_neighbors)
-
-        idcs = np.argsort(H)
-        plt.figure(figsize=(25, 25))
-
-        fig, axd = plt.subplot_mosaic([
-            ['scatter_1', 'scatter_2', 'scatter_3', 'scatter_4'],
-            ['bar', 'bar', 'bar', 'bar'],
-            ['scatter_5', 'scatter_6', 'scatter_7', 'scatter_8'],
-        ],
-            figsize=(11, 7),
-            constrained_layout=True)
-
-        dem_plots = np.array([
-            0,
-            2,
-            len(H) - 3,
-            len(H) - 1,
-            1,
-            int(len(H) / 2),
-            int(len(H) / 2) + 1,
-            len(H) - 2,
-        ])
-        colors = ('royalblue', 'goldenrod', 'red', 'purple', 'lime',
-                  'turquoise', 'green', 'yellow')
-
-        axd['bar'].bar(
-            range(len(H)),
-            H[idcs],
-            color=[
-                colors[np.where(
-                    dem_plots == i)[0][0]] if i in dem_plots else 'grey'
-                for i in range(len(self.stats.counts))
-            ])
-
-        axd['bar'].set_xticks(range(len(H)),
-                              [self.gene_classes[h] for h in idcs],
-                              rotation=90)
-        axd['bar'].set_ylabel('knn entropy, k=' + str(n_neighbors))
-
-        for i in range(8):
-            idx = idcs[dem_plots[i]]
-            gene = self.gene_classes[idx]
-            plot_name = 'scatter_' + str(i + 1)
-            axd[plot_name].set_title(gene)
-            axd[plot_name].scatter(self.X, self.Y, color=(0.5, 0.5, 0.5, 0.1))
-            axd[plot_name].scatter(self.X[self['gene_id'] == idx],
-                                   self.Y[self['gene_id'] == idx],
-                                   color=colors[i],
-                                   marker='.')
-            axd[plot_name].set_xticks([], [])
-            # if i>0:
-            axd[plot_name].set_yticks([], [])
-
-            if i < 4:
-                y_ = (H[idcs])[i]
-                _y = 0
-            else:
-                y_ = 0
-                _y = 1
-
-            con = ConnectionPatch(xyA=(dem_plots[i], y_),
-                                  coordsA=axd['bar'].transData,
-                                  xyB=(np.mean(axd[plot_name].get_xlim()),
-                                       axd[plot_name].get_ylim()[_y]),
-                                  coordsB=axd[plot_name].transData,
-                                  color='white',
-                                  linewidth=1,
-                                  linestyle='dotted')
-            fig.add_artist(con)
 
     def scatter(self,
                 c=None,
@@ -758,11 +861,11 @@ class SpatialData(pd.DataFrame):
             c = self.gene_ids
 
         # axd.set_title(gene)
-        axd.scatter(self.X,
-                    self.Y,
+        axd.scatter(self.x,
+                    self.y,
                     c=c,
                     color=color,
-                    cmap='nipy_spectral',
+                    cmap='jet',
                     **kwargs)
 
     def plot_bars(self, axis=None, **kwargs):
@@ -773,8 +876,8 @@ class SpatialData(pd.DataFrame):
         axis.set_yscale('log')
 
         axis.set_xticks(
-            np.arange(len(self.gene_classes_sorted)),
-            self.gene_classes_sorted,
+            np.arange(len(self.genes_sorted)),
+            self.genes_sorted,
             # fontsize=12,
             rotation=90)
 
@@ -804,12 +907,12 @@ class SpatialData(pd.DataFrame):
 
         for i in range(4):
             idx = self.stats.count_indices[scatter_idcs[i]]
-            gene = self.gene_classes[idx]
+            gene = self.genes[idx]
             plot_name = 'scatter_' + str(i + 1)
             axd[plot_name].set_title(gene)
-            axd[plot_name].scatter(self.X, self.Y, color=(0.5, 0.5, 0.5, 0.1))
-            axd[plot_name].scatter(self.X[self['gene_id'] == idx],
-                                   self.Y[self['gene_id'] == idx],
+            axd[plot_name].scatter(self.x, self.y, color=(0.5, 0.5, 0.5, 0.1))
+            axd[plot_name].scatter(self.x[self['gene_id'] == idx],
+                                   self.y[self['gene_id'] == idx],
                                    color=colors[i],
                                    marker='.')
 
@@ -844,9 +947,9 @@ class SpatialData(pd.DataFrame):
     ):
 
         if mRNAs_center is None:
-            mRNAs_center = self.gene_classes
+            mRNAs_center = self.genes
         if mRNAs_neighbor is None:
-            mRNAs_neighbor = self.gene_classes
+            mRNAs_neighbor = self.genes
 
         self.graph.update_knn(n_neighbors=n_neighbors)
         neighbors = self.graph.neighbors
@@ -858,7 +961,7 @@ class SpatialData(pd.DataFrame):
         clrs = []
         intensity = []
 
-        out = np.zeros((30, 30, len(self.gene_classes)))
+        out = np.zeros((30, 30, len(self.genes)))
 
         mask_center = np.logical_or.reduce(
             [neighbor_classes[:, 0] == self.get_id(m) for m in mRNAs_center])
@@ -874,8 +977,8 @@ class SpatialData(pd.DataFrame):
 
             for i_neighbor, n in enumerate(neighbors[mask_combined]):
 
-                xs = np.array(self.X.iloc[n])
-                ys = np.array(self.Y.iloc[n])
+                xs = np.array(self.x.iloc[n])
+                ys = np.array(self.y.iloc[n])
 
                 x_centered = xs - xs[0]
                 y_centered = ys - ys[0]
@@ -917,6 +1020,11 @@ class SpatialData(pd.DataFrame):
         pptr = (pptx**2 + ppty**2)**0.5
 
         clrs = np.concatenate(clrs)
+        
+        scale = pptr.max()
+        for i in range(len(mRNAs_neighbor)):
+            mask = clrs==i
+            out[(pptt[mask]/1.5*100).astype(int),(pptr[mask]/scale*100).astype(int),i]+=1
 
         plt.axhline(0)
         plt.axvline(0)
@@ -943,7 +1051,7 @@ class SpatialData(pd.DataFrame):
         self.graph.update_knn(n_neighbors=n_neighbors)
         types = self.graph.neighbor_types
         count_matrix = sparse.lil_matrix(
-            (types.shape[0], self.gene_classes.shape[0]))
+            (types.shape[0], self.genes.shape[0]))
         for i, t in enumerate(types):
             classes, counts = (np.unique(t[:n_neighbors], return_counts=True))
             count_matrix[i, classes] = counts / counts.sum()
@@ -955,7 +1063,7 @@ class SpatialData(pd.DataFrame):
         count_matrix_inv = count_matrix.copy()
         count_matrix_inv.data = 1 / (count_matrix.data)
 
-        prototypes = np.zeros((len(self.gene_classes), ) * 2)
+        prototypes = np.zeros((len(self.genes), ) * 2)
         for i in range(prototypes.shape[0]):
             prototypes[i] = count_matrix[self.gene_ids == i].sum(0)
         prototypes /= prototypes.sum(0)
@@ -979,11 +1087,33 @@ class SpatialData(pd.DataFrame):
                                     celltypes_2=None):
         adata, sdata = synchronize(adata, self)
 
+    def squidpy(self):
+        # obs={"cluster":self.gene_id.astype('category')}
+        obsm = {"spatial":np.array(self.coordinates).T}
+        # var= self.genes
+        # self.obs = self.index
+        # X = self.X #scipy.sparse.csc_matrix((np.ones(len(self.g),),(np.arange(len(self.g)),np.array(self.gene_ids).flatten())),
+                        # shape=(len(self.g),self.genes.shape[0],))
 
+        # sparse_representation = scipy.sparse.scr()
+        # var = self.var #pd.DataFrame(index=self.genes)
+        uns = self.uns.update({'Image':self.background})
+        obs = pd.DataFrame({'gene':self.g})
+        obs['gene']=obs['gene'].astype('category')
+        return  anndata.AnnData(X=self.X,obs=obs,var=self.var,obsm=obsm)
+
+## here starts plotting.py
+
+def create_colorarray(sdata,values,cmap=None):
+    if cmap is None:
+        return values[sdata.gene_ids]
+
+
+        
 # def determine_gains(sc, spatial):
 
 #     sc_genes = sc.var.index
-#     counts_sc = np.array(sc.X.sum(0) / sc.X.sum()).flatten()
+#     counts_sc = np.array(sc.x.sum(0) / sc.x.sum()).flatten()
 #     counts_spatial = np.array([spatial.get_count(g) for g in sc_genes])
 #     counts_spatial = counts_spatial / counts_spatial.sum()
 #     count_ratios = counts_sc / counts_spatial
@@ -1032,7 +1162,7 @@ class SpatialData(pd.DataFrame):
 # def compare_counts(sc, spatial):
 
 #     sc_genes = (sc.var.index)
-#     sc_counts = (np.array(sc.X.sum(0)).flatten())
+#     sc_counts = (np.array(sc.x.sum(0)).flatten())
 #     sc_count_idcs = np.argsort(sc_counts)
 #     count_ratios = np.log(determine_gains(sc, spatial))
 #     count_ratios -= count_ratios.min()
@@ -1065,99 +1195,99 @@ class SpatialData(pd.DataFrame):
 
 
 # def get_count(adata, gene):
-#     return (adata.X[:, adata.var.index == gene].sum())
+#     return (adata.x[:, adata.var.index == gene].sum())
 
 
-def compare_counts_cellwise(sc, spatial, cell_obs_label):
+# def compare_counts_cellwise(sc, spatial, cell_obs_label):
 
-    genes = list(sc.unique_genes)
-    count_ratios = np.log(determine_gains(sc, spatial))
-    count_ratios -= count_ratios.min()
-    count_ratios /= count_ratios.max()
+#     genes = list(sc.unique_genes)
+#     count_ratios = np.log(determine_gains(sc, spatial))
+#     count_ratios -= count_ratios.min()
+#     count_ratios /= count_ratios.max()
 
-    ax1 = plt.subplot(311)
+#     ax1 = plt.subplot(311)
 
-    # print([genes.index(g) for g in sc.unique_genes])
+#     # print([genes.index(g) for g in sc.unique_genes])
 
-    span = np.array(
-        [count_ratios[sc.get_index(g)] for g in sc.unique_genes_sorted])
-    clrs = np.stack([
-        span,
-        span * 0,
-        1 - span,
-    ]).T
+#     span = np.array(
+#         [count_ratios[sc.get_index(g)] for g in sc.unique_genes_sorted])
+#     clrs = np.stack([
+#         span,
+#         span * 0,
+#         1 - span,
+#     ]).T
 
-    ax1.set_title('compared molecule counts:')
-    sc.plot_bars(ax1, color=clrs)
-    ax1.set_ylabel('log(count) scRNAseq')
+#     ax1.set_title('compared molecule counts:')
+#     sc.plot_bars(ax1, color=clrs)
+#     ax1.set_ylabel('log(count) scRNAseq')
 
-    ax2 = plt.subplot(312)
-    for i, gene in enumerate(sc.unique_genes_sorted):
-        plt.plot(
-            [i, spatial.get_sort_index(gene)],
-            [1, 0],
-        )
-    plt.axis('off')
-    ax2.set_ylabel(' ')
+#     ax2 = plt.subplot(312)
+#     for i, gene in enumerate(sc.unique_genes_sorted):
+#         plt.plot(
+#             [i, spatial.get_sort_index(gene)],
+#             [1, 0],
+#         )
+#     plt.axis('off')
+#     ax2.set_ylabel(' ')
 
-    ax3 = plt.subplot(313)
+#     ax3 = plt.subplot(313)
 
-    span = np.array(
-        [count_ratios[sc.get_index(g)] for g in spatial.unique_genes_sorted])
+#     span = np.array(
+#         [count_ratios[sc.get_index(g)] for g in spatial.unique_genes_sorted])
 
-    clrs = np.stack([
-        span,
-        span * 0,
-        1 - span,
-    ]).T
+#     clrs = np.stack([
+#         span,
+#         span * 0,
+#         1 - span,
+#     ]).T
 
-    spatial.plot_bars(ax3, color=clrs)
-    ax3.invert_yaxis()
-    ax3.xaxis.tick_top()
-    ax3.xaxis.set_label_position('top')
-    ax3.set_ylabel('log(count) spatial')
-
-
-def plot_overview(spatial):
-    spatial.plot_overview()
+#     spatial.plot_bars(ax3, color=clrs)
+#     ax3.invert_yaxis()
+#     ax3.xaxis.tick_top()
+#     ax3.xaxis.set_label_position('top')
+#     ax3.set_ylabel('log(count) spatial')
 
 
-def synchronize(sc,
-                spatial,
-                mRNA_threshold_sc=10,
-                mRNA_threshold_spatial=10,
-                verbose=True):
+# def plot_overview(spatial):
+#     spatial.plot_overview()
 
-    genes_sc = set(sc.var.index)
-    genes_spatial = set(spatial.gene_classes)
 
-    genes_xor = genes_sc.symmetric_difference(genes_spatial)
+# def synchronize(sc,
+#                 spatial,
+#                 mRNA_threshold_sc=10,
+#                 mRNA_threshold_spatial=10,
+#                 verbose=True):
 
-    for gene in genes_xor:
-        if gene in genes_sc:
-            pass
-            # print('Removing {}, which is not present in spatial data'.format(
-            #     gene))
-        else:
-            print('Removing {}, which is not present in SC data'.format(gene))
+#     genes_sc = set(sc.var.index)
+#     genes_spatial = set(spatial.genes)
 
-    genes_and = (genes_sc & genes_spatial)
+#     genes_xor = genes_sc.symmetric_difference(genes_spatial)
 
-    for gene in sorted(genes_and):
-        if verbose:
-            print(gene)
-        if (get_count(sc, gene) < mRNA_threshold_sc):
-            if verbose:
-                print('Removing {}, low count in SC data'.format(gene))
-            genes_and.remove(gene)
-        elif spatial.get_count(gene) < mRNA_threshold_spatial:
-            if verbose:
-                print('Removing {}, low count in spatial data'.format(gene))
-            genes_and.remove(gene)
+#     for gene in genes_xor:
+#         if gene in genes_sc:
+#             pass
+#             # print('Removing {}, which is not present in spatial data'.format(
+#             #     gene))
+#         else:
+#             print('Removing {}, which is not present in SC data'.format(gene))
 
-    genes_and = sorted(genes_and)
+#     genes_and = (genes_sc & genes_spatial)
 
-    # spatial.filter(genes_and)
-    sc = sc[:, genes_and]
+#     for gene in sorted(genes_and):
+#         if verbose:
+#             print(gene)
+#         if (get_count(sc, gene) < mRNA_threshold_sc):
+#             if verbose:
+#                 print('Removing {}, low count in SC data'.format(gene))
+#             genes_and.remove(gene)
+#         elif spatial.get_count(gene) < mRNA_threshold_spatial:
+#             if verbose:
+#                 print('Removing {}, low count in spatial data'.format(gene))
+#             genes_and.remove(gene)
 
-    return (sc, spatial[spatial.gene_annotations.isin(genes_and)])
+#     genes_and = sorted(genes_and)
+
+#     # spatial.filter(genes_and)
+#     sc = sc[:, genes_and]
+
+#     return (sc, spatial[spatial.g.isin(genes_and)])
