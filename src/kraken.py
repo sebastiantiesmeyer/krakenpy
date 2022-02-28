@@ -21,6 +21,9 @@ import pandas as pd
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
 
+from umap import UMAP
+from sklearn. import TSNE
+
 
 class PixelMap():
 
@@ -237,6 +240,8 @@ class SpatialGraph():
         self._neighbors = None
         self._neighbor_types = None
         self._distances = None
+        self._umap = None
+        self._tsne = None
 
     @property
     def neighbors(self):
@@ -258,6 +263,18 @@ class SpatialGraph():
             self._distances, self._neighbors, self._neighbor_types = self.update_knn(
                 self.n_neighbors)
         return self._neighbor_types
+
+    def __getitem__(self,*args):
+        sg = SpatialGraph(self.df,self.n_neighbors)
+        if self._distances is not None:
+            sg._distances = self._distances.__getitem__(*args)
+        if self._neighbors is not None:
+            sg._neighbors = self._neighbors.__getitem__(*args)
+        if self._neighbor_types is not None:
+            sg._neighbor_types = self._neighbor_types.__getitem__(*args)
+        if self._umap is not None:
+            sg._distances = self._distances.__getitem__(*args)
+
 
     def update_knn(self, n_neighbors, re_run=False):
 
