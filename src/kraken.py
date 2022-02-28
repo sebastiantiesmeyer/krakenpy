@@ -8,6 +8,8 @@ from typing import Union
 
 from matplotlib import pyplot as plt
 from matplotlib.patches import ConnectionPatch
+from matplotlib.cm import get_cmap
+
 
 from scipy import sparse
 import collections
@@ -393,13 +395,15 @@ class ScanpyDataFrame():
 
         for i, label in enumerate(self.celltype_labels):
             self.signature_matrix[i] = np.array(
-                self.adata[self.adata.obs[celltype_obs_marker] == label].x.sum(
+                self.adata[self.adata.obs[celltype_obs_marker] == label].X.sum(
                     0)).flatten()
 
         self.signature_matrix = self.signature_matrix - self.signature_matrix.mean(
             1)[:, None]
         self.signature_matrix = self.signature_matrix / self.signature_matrix.std(
             1)[:, None]
+
+        self.signature_matrix = pd.DataFrame(self.signature_matrix, index=self.celltype_labels,columns=self.stats.index )
 
         return self.signature_matrix
 
@@ -849,6 +853,7 @@ class SpatialData(pd.DataFrame):
                 gene=None,
                 axd=None,
                 plot_bg=True,
+                cmap='jet',
                 **kwargs):
 
         if axd is None:
@@ -860,12 +865,18 @@ class SpatialData(pd.DataFrame):
         if c is None and color is None:
             c = self.gene_ids
 
+        cmap = get_cmap(cmap)    
+
+        clrs = [cmap(f) for f in np.linspace(0,1,len(self.genes))]
+        handles = [plt.scatter([],[],color=c) for c in clrs]
+        plt.legend(handles,self.genes)
+
         # axd.set_title(gene)
         axd.scatter(self.x,
                     self.y,
                     c=c,
                     color=color,
-                    cmap='jet',
+                    cmap=cmap,
                     **kwargs)
 
     def plot_bars(self, axis=None, **kwargs):
