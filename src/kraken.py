@@ -22,7 +22,7 @@ import numpy as np
 from sklearn.neighbors import NearestNeighbors
 
 from umap import UMAP
-from sklearn. import TSNE
+from sklearn.manifold import TSNE
 
 
 class PixelMap():
@@ -48,7 +48,7 @@ class PixelMap():
     def shape(self):
         return self.extent[1] - self.extent[0], self.extent[3] - self.extent[2]
 
-    def imshow(self, **kwargs) -> None:
+    def imshow(self, axd=None, **kwargs) -> None:
         extent = np.array(self.extent)
 
         if (len(self.data.shape)>2) and (self.data.shape[2]>4):
@@ -56,7 +56,10 @@ class PixelMap():
         else:
             data = self.data
 
-        plt.imshow(data, extent=extent[[0, 3, 1, 2]], **kwargs)
+        if axd is None:
+            axd = plt.subplot(111)
+
+        axd.imshow(data, extent=extent[[0, 3, 1, 2]], **kwargs)
 
     def __getitem__(self, indices: Union[slice, collections.Iterable[slice]]):
 
@@ -867,7 +870,7 @@ class SpatialData(pd.DataFrame):
     def scatter(self,
                 c=None,
                 color=None,
-                gene=None,
+                legend  =None,
                 axd=None,
                 plot_bg=True,
                 cmap='jet',
@@ -877,7 +880,7 @@ class SpatialData(pd.DataFrame):
             axd = plt.subplot(111)
 
         if self.background and plot_bg:
-            self.background.imshow(cmap='Greys')
+            self.background.imshow(cmap='Greys', axd=axd)
 
         if c is None and color is None:
             c = self.gene_ids
@@ -886,7 +889,8 @@ class SpatialData(pd.DataFrame):
 
         clrs = [cmap(f) for f in np.linspace(0,1,len(self.genes))]
         handles = [plt.scatter([],[],color=c) for c in clrs]
-        plt.legend(handles,self.genes)
+        if legend:
+            plt.legend(handles,self.genes)
 
         # axd.set_title(gene)
         axd.scatter(self.x,
