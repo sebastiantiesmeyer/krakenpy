@@ -1,5 +1,7 @@
 
 from __future__ import annotations
+from cgitb import text
+from enum import unique
 
 import warnings
 warnings.simplefilter(action='ignore', category=UserWarning)
@@ -9,6 +11,7 @@ from typing import Union
 from matplotlib import pyplot as plt
 from matplotlib.patches import ConnectionPatch
 from matplotlib.cm import get_cmap
+import matplotlib.patheffects as PathEffects
 
 
 from scipy import sparse
@@ -267,6 +270,18 @@ class SpatialGraph():
                 self.n_neighbors)
         return self._neighbor_types
 
+    @property
+    def umap(self):
+        if self._umap is None:
+            self.run_umap()
+        return self._umap
+
+    @property
+    def tsne(self):
+        if self._tsne is None:
+            self.run_tsne()
+        return self._tsne
+
     def __getitem__(self,*args):
         sg = SpatialGraph(self.df,self.n_neighbors)
         if self._distances is not None:
@@ -275,9 +290,6 @@ class SpatialGraph():
             sg._neighbors = self._neighbors.__getitem__(*args)
         if self._neighbor_types is not None:
             sg._neighbor_types = self._neighbor_types.__getitem__(*args)
-        if self._umap is not None:
-            sg._distances = self._distances.__getitem__(*args)
-
 
     def update_knn(self, n_neighbors, re_run=False):
 
@@ -390,6 +402,106 @@ class SpatialGraph():
                                   linewidth=1,
                                   linestyle='dotted')
             fig.add_artist(con)
+
+    def _determine_counts(self):
+        counts = np.zeros((len(self.df,),len(self.df.genes)))
+
+        for i in range(self.df.graph.n_neighbors):
+            counts[np.arange(len(self.df)),self.df.graph.neighbor_types[:,i]]+=1/(1+self.df.graph.distances[:,i]**0.5) 
+        return counts
+
+    def run_umap(self,*args,**kwargs):        
+
+        counts = self._determine_counts()
+        umap=UMAP(*args,**kwargs)
+        self._umap = umap.fit_transform(counts)
+
+    def run_tsne(self,*args,**kwargs):        
+        counts = self._determine_counts()   
+
+        tsne=TSNE(*args,**kwargs)
+        self._tsne = tsne.fit_transform(counts)
+
+    def plot_umap(self, text_column=None, color_category='g', color_dict=None, **kwargs):
+        self.plot_embedding(self.umap, text_column, color_category, color_dict, **kwargs)
+
+    def plot_tsne(self,text_column=None, color_category='g', color_dict=None, **kwargs):
+        self.plot_embedding(self.tsne, text_column, color_category, color_dict, **kwargs)
+
+    def plot_embedding(self, embedding, text_column=None, color_category='g', color_dict=None, **kwargs):
+
+        categories = self.df[color_category].unique() 
+
+        if (color_dict is None):
+            cmap = get_cmap('nipy_spectral')
+            color_dict = {categories[i]:cmap(f) for i,f in enumerate(np.linspace(0,1,len(categories)))}
+
+        colors = [color_dict[c] for c in self.df[color_category]]
+        handlers = [plt.scatter([],[],color=color_dict[c]) for c in color_dict]
+        plt.legend(handlers, color_dict.keys())
+
+        plt.scatter(*embedding.T,c=colors, **kwargs)
+
+        if text_column is not None:
+            cog_dict = self._determine_cog(embedding,text_column)
+            unique_texts = list(cog_dict.keys())
+            cogs = np.array(list(cog_dict.values()))
+            cogs = self._untangle_text(cogs)
+
+            for i,g in enumerate(unique_texts):
+                x = cogs[i][0]
+                y = cogs[i][1]
+                txt = plt.text(x,y,g,size=13,ha='center',weight='bold',color='w')
+                # txt = plt.text(x,y,g,size=13,ha='center',color=color ,weight='bold')
+
+                txt.set_path_effects([PathEffects.withStroke(linewidth=2, foreground='k')])
+
+    
+
+    def _determine_cog(self, embedding, column_name):
+
+        unique_texts = self.df[column_name].unique()
+        codes = self.df[column_name].cat.codes
+
+        knn = NearestNeighbors(n_neighbors=50)
+        knn.fit(embedding)
+        distances,neighbors = knn.kneighbors(embedding)
+        neighbor_types = np.array(codes)[neighbors]
+        cogs = []
+
+        for i in range(len(unique_texts)):
+            nt_filtered = 1/(1+distances)
+            nt_filtered[(neighbor_types[:,0]!=i)]=0
+            nt_filtered[(neighbor_types!=i)]=0
+            gravity = nt_filtered
+            gravity = gravity.sum(1)
+            cog = gravity.argmax()
+            cogs.append(embedding[cog])
+
+        return {self.df[column_name].cat.categories[i]: c for i,c in enumerate(cogs)}
+ 
+    def _untangle_text(self, cogs, untangle_rounds=50, min_distance=0.5):
+        knn = NearestNeighbors(n_neighbors=2)
+
+        cogs_new = cogs.copy()
+
+        for i in range(untangle_rounds):
+
+            cogs = cogs_new.copy()
+            knn = NearestNeighbors(n_neighbors=2)
+
+            knn.fit(cogs)
+            distances,neighbors = knn.kneighbors(cogs)
+            too_close = (distances[:,1]<min_distance)
+
+            for i,c in enumerate(np.where(too_close)[0]):
+                partner = neighbors[c,1]
+                cog = cogs[c]-cogs[partner]
+                cog_new = cogs[c]+0.3*cog
+                cogs_new[c]= cog_new
+                
+        return cogs_new
+
 
 class ScanpyDataFrame():
 
@@ -1139,6 +1251,48 @@ class SpatialData(pd.DataFrame):
 def create_colorarray(sdata,values,cmap=None):
     if cmap is None:
         return values[sdata.gene_ids]
+
+
+
+def determine_text_coords(embedding, sdata,untangle_rounds=10, min_distance=0.5):
+    knn = NearestNeighbors(n_neighbors=50)
+    knn.fit(embedding)
+    distances,neighbors = knn.kneighbors(embedding)
+    neighbor_types = np.array(sdata.gene_ids)[neighbors]
+    cogs = []
+
+    for i in range(len(sdata.stats)):
+        nt_filtered = 1/(1+distances)
+        nt_filtered[(neighbor_types[:,0]!=i)]=0
+        nt_filtered[(neighbor_types!=i)]=0
+        gravity = nt_filtered
+        
+        gravity = gravity.sum(1)
+        cog = gravity.argmax()
+        cogs.append(embedding[cog])
+
+    cogs = np.array(cogs)
+
+    knn = NearestNeighbors(n_neighbors=2)
+    
+    cogs_new = cogs.copy()
+
+    for i in range(untangle_rounds):
+
+        cogs = cogs_new.copy()
+        knn = NearestNeighbors(n_neighbors=2)
+
+        knn.fit(cogs)
+        distances,neighbors = knn.kneighbors(cogs)
+        too_close = (distances[:,1]<min_distance)
+
+        for i,c in enumerate(np.where(too_close)[0]):
+            partner = neighbors[c,1]
+            cog = cogs[c]-cogs[partner]
+            cog_new = cogs[c]+0.3*cog
+            cogs_new[c]= cog_new
+            
+    return cogs_new
 
 
         
