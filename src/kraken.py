@@ -254,21 +254,21 @@ class SpatialGraph():
         if self._neighbors is None:
             self._distances, self._neighbors, self._neighbor_types = self.update_knn(
                 self.n_neighbors)
-        return self._neighbors
+        return self._neighbors[:,:self.n_neighbors]
 
     @property
     def distances(self):
         if self._distances is None:
             self._distances, self._neighbors, self._neighbor_types = self.update_knn(
                 self.n_neighbors)
-        return self._distances
+        return self._distances[:,:self.n_neighbors]
 
     @property
     def neighbor_types(self):
         if self._neighbor_types is None:
             self._distances, self._neighbors, self._neighbor_types = self.update_knn(
                 self.n_neighbors)
-        return self._neighbor_types
+        return self._neighbor_types[:,:self.n_neighbors]
 
     @property
     def umap(self):
@@ -295,9 +295,10 @@ class SpatialGraph():
 
         if self._neighbors is not None and (n_neighbors <
                                             self._neighbors.shape[1]):
-            return (self._neighbors[:, :n_neighbors],
-                    self._distances[:, :n_neighbors],
-                    self._neighbor_types[:, :n_neighbors])
+            self.n_neighbors=n_neighbors
+            # return (self._neighbors[:, :n_neighbors],
+            #         self._distances[:, :n_neighbors],
+            #         self._neighbor_types[:, :n_neighbors])
         else:
 
             coordinates = np.stack([self.df.x, self.df.y]).T
@@ -308,7 +309,7 @@ class SpatialGraph():
 
             self.n_neighbors = n_neighbors
 
-            return self.distances, self.neighbors, self.neighbor_types
+            # return self.distances, self.neighbors, self.neighbor_types
 
     def knn_entropy(self, n_neighbors=4):
 
@@ -403,32 +404,31 @@ class SpatialGraph():
                                   linestyle='dotted')
             fig.add_artist(con)
 
-    def _determine_counts(self):
+    def _determine_counts(self,bandwidth=1):
         counts = np.zeros((len(self.df,),len(self.df.genes)))
 
         for i in range(self.df.graph.n_neighbors):
-            counts[np.arange(len(self.df)),self.df.graph.neighbor_types[:,i]]+=1/(1+self.df.graph.distances[:,i]**0.5) 
+            counts[np.arange(len(self.df)),self.df.graph.neighbor_types[:,i]]+=np.exp(-self.df.graph.distances[:,i]**2/(2*bandwidth**2)) 
         return counts
 
-    def run_umap(self,*args,**kwargs):        
+    def run_umap(self,bandwidth=1,*args,**kwargs):        
 
-        counts = self._determine_counts()
+        counts = self._determine_counts(bandwidth=bandwidth)
         umap=UMAP(*args,**kwargs)
         self._umap = umap.fit_transform(counts)
 
-    def run_tsne(self,*args,**kwargs):        
-        counts = self._determine_counts()   
-
+    def run_tsne(self,bandwidth=1,*args,**kwargs):        
+        counts = self._determine_counts(bandwidth=bandwidth)
         tsne=TSNE(*args,**kwargs)
         self._tsne = tsne.fit_transform(counts)
 
-    def plot_umap(self, text_column=None, color_category='g', color_dict=None, **kwargs):
-        self.plot_embedding(self.umap, text_column, color_category, color_dict, **kwargs)
+    def plot_umap(self, text_column=None, color_category='g', color_dict=None, c=None, **kwargs):
+        self.plot_embedding(self.umap, text_column=text_column, color_category=color_category, color_dict=color_dict, c=c, **kwargs)
 
-    def plot_tsne(self,text_column=None, color_category='g', color_dict=None, **kwargs):
-        self.plot_embedding(self.tsne, text_column, color_category, color_dict, **kwargs)
+    def plot_tsne(self,text_column=None, color_category='g', color_dict=None, c=None, **kwargs):
+        self.plot_embedding(self.tsne, text_column=text_column, color_category=color_category, color_dict=color_dict, c=c, **kwargs)
 
-    def plot_embedding(self, embedding, text_column=None, color_category='g', color_dict=None, **kwargs):
+    def plot_embedding(self, embedding, text_column=None, color_category='g', color_dict=None, c=None, **kwargs):
 
         categories = self.df[color_category].unique() 
 
@@ -438,6 +438,9 @@ class SpatialGraph():
 
         colors = [color_dict[c] for c in self.df[color_category]]
         handlers = [plt.scatter([],[],color=color_dict[c]) for c in color_dict]
+
+        if c is not None:
+            colors=c
         plt.legend(handlers, color_dict.keys())
 
         plt.scatter(*embedding.T,c=colors, **kwargs)
@@ -446,7 +449,7 @@ class SpatialGraph():
             cog_dict = self._determine_cog(embedding,text_column)
             unique_texts = list(cog_dict.keys())
             cogs = np.array(list(cog_dict.values()))
-            cogs = self._untangle_text(cogs)
+            cogs = self._untangle_text(cogs,min_distance=0.9)
 
             for i,g in enumerate(unique_texts):
                 x = cogs[i][0]
@@ -1294,6 +1297,30 @@ def determine_text_coords(embedding, sdata,untangle_rounds=10, min_distance=0.5)
             
     return cogs_new
 
+
+def hbar_compare(stat1,stat2,labels=None,text_display_threshold=0.02):
+
+    genes_united=sorted(list(set(np.concatenate([stat1.index,stat2.index]))))[::-1]
+    counts_1=[0]+[stat1.loc[i].counts if i in stat1.index else 0 for i in genes_united]
+    counts_2=[0]+[stat2.loc[i].counts if i in stat2.index else 0 for i in genes_united]
+    cum1 = np.cumsum(counts_1)/sum(counts_1)
+    cum2 = np.cumsum(counts_2)/sum(counts_2)
+
+    for i in range(1,len(cum1)):
+
+        bars = plt.bar([0,1],[cum1[i]-cum1[i-1],cum2[i]-cum2[i-1]],
+                bottom=[cum1[i-1],cum2[i-1],], width=0.4)
+        clr=bars.get_children()[0].get_facecolor()
+        plt.plot((0.2,0.8),(cum1[i],cum2[i]),c='grey')
+        plt.fill_between((0.2,0.8),(cum1[i],cum2[i]),(cum1[i-1],cum2[i-1]),color=clr,alpha=0.2)
+        
+        if (counts_1[i]/sum(counts_1)>text_display_threshold) or \
+        (counts_2[i]/sum(counts_2)>text_display_threshold): 
+            plt.text(0.5,(cum1[i]+cum1[i-1]+cum2[i]+cum2[i-1])/4,
+                    genes_united[i-1],ha='center',)  
+
+    if labels is not None:
+        plt.xticks((0,1),labels) 
 
         
 # def determine_gains(sc, spatial):
