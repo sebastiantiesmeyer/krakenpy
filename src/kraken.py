@@ -2,6 +2,8 @@
 from __future__ import annotations
 from cgitb import text
 from enum import unique
+from hashlib import new
+from turtle import color
 
 import warnings
 warnings.simplefilter(action='ignore', category=UserWarning)
@@ -19,6 +21,7 @@ import collections
 import scanpy as sc
 import anndata
 import scipy
+import random
 
 import pandas as pd
 import numpy as np
@@ -27,6 +30,7 @@ from sklearn.neighbors import NearestNeighbors
 from umap import UMAP
 from sklearn.manifold import TSNE
 
+plt.style.use('dark_background')
 
 class PixelMap():
 
@@ -160,82 +164,7 @@ class CellTypeMap(PixelMap):
     # def __init__(self: PixelMap, pixel_data: np.ndarray, upscale: float = 1) -> None:
     #     super().__init__(pixel_data, upscale)
 
-# class SsamLite(PixelMap):
 
-#     def __init__(self,
-#                  sd: SpatialData,
-#                  bandwidth: float = 3.0,
-#                  threshold_vf_norm: float = 1.0,
-#                  threshold_p_corr: float = 0.5,
-#                  upscale: float = 1) -> None:
-
-#         self.sd = sd
-#         self.bandwidth = bandwidth
-#         self.threshold_vf_norm = threshold_vf_norm
-#         self.threshold_p_corr = threshold_p_corr
-
-#         self.extent = tuple(self.sd.background.extent)
-#         self.extent_shape = (int(self.extent[1] - self.extent[0]),
-#                              int(self.extent[3] - self.extent[2]))
-
-#         self.scale = upscale
-#         self.data = np.zeros(
-#             (int(self.shape[0] * self.scale), int(self.shape[1] * self.scale)))
-
-
-#     @property
-#     def signatures(self) -> np.ndarray:
-#         return self.sd.scanpy.signatures
-
-#     def run_algorithm(self) -> None:
-
-#         # from tqdm import tqdm_notebook
-
-#         kernel = self.generate_kernel(15, self.scale)
-
-#         X_int = np.array(self.sd.y * self.scale).astype(int)
-#         Y_int = np.array(self.sd.x * self.scale).astype(int)
-#         sort_idcs = np.argsort(X_int)
-#         X_ = X_int[sort_idcs]
-#         Y_ = Y_int[sort_idcs]
-
-#         uniques, inv_idcs = np.unique(X_, return_index=True)
-
-#         gene_ids = np.array(self.sd.gene_ids)[sort_idcs]
-
-#         print(self.celltype_map.shape)
-
-#         temp_vf = np.zeros((kernel.shape[0],
-#                             self.celltype_map.shape[1] + kernel.shape[0] + 10,
-#                             len(self.sd.genes)))
-
-#         for i, u_ in enumerate(uniques[:-1]):
-
-#             _u = uniques[i + 1]
-
-#             u_u = min(_u - u_, kernel.shape[0])
-
-#             y = Y_[inv_idcs[i]:inv_idcs[i + 1]]
-#             ids = gene_ids[inv_idcs[i]:inv_idcs[i + 1]]
-
-#             for i, k in enumerate(kernel):
-#                 temp_vf[:, y + i, ids] += k[:, None]
-
-#             self.celltype_map[u_:u_ + u_u] = temp_vf[-u_u:, 19:].sum(-1)
-
-#             temp_vf[-u_u:] = 0
-
-#             temp_vf = np.roll(temp_vf, u_u, axis=0)
-
-#     def generate_kernel(self, bandwidth: float, scale: float = 1) -> np.ndarray:
-
-#         kernel_width_in_pixels = int(bandwidth * scale *
-#                                      6)  # kernel is 3 sigmas wide.
-
-#         span = np.linspace(-3, 3, kernel_width_in_pixels)
-#         X, Y = np.meshgrid(span, span)
-
-#         return 1 / (2 * np.pi)**0.5 * np.exp(-0.5 * ((X**2 + Y**2)**0.5)**2)
 
 class SpatialGraph():
 
@@ -404,89 +333,119 @@ class SpatialGraph():
                                   linestyle='dotted')
             fig.add_artist(con)
 
-    def _determine_counts(self,bandwidth=1):
-        counts = np.zeros((len(self.df,),len(self.df.genes)))
+    def _determine_counts(self,bandwidth=1, kernel=None):
 
-        for i in range(self.df.graph.n_neighbors):
-            counts[np.arange(len(self.df)),self.df.graph.neighbor_types[:,i]]+=np.exp(-self.df.graph.distances[:,i]**2/(2*bandwidth**2)) 
+        counts = np.zeros((len(self.df,),len(self.df.genes)))
+        if kernel is None:
+            kernel = lambda x: np.exp(-x**2/(2*bandwidth**2))
+
+        for i in range(0,self.n_neighbors):
+            counts[np.arange(len(self.df)),self.neighbor_types[:,i]]+=  kernel(self.distances[:,i])
         return counts
 
-    def run_umap(self,bandwidth=1,*args,**kwargs):        
-
-        counts = self._determine_counts(bandwidth=bandwidth)
-        umap=UMAP(*args,**kwargs)
+    def run_umap(self,bandwidth=1,kernel=None,metric='cosine', zero_weight=1,*args,**kwargs):        
+        # print(kwargs)
+        counts = self._determine_counts(bandwidth=bandwidth,kernel=kernel)
+        assert (all(counts.sum(1))>0)
+        counts[np.arange(len(self.df)),self.df.gene_ids]+=zero_weight-1
+        umap=UMAP(metric=metric,*args,**kwargs)
         self._umap = umap.fit_transform(counts)
 
-    def run_tsne(self,bandwidth=1,*args,**kwargs):        
-        counts = self._determine_counts(bandwidth=bandwidth)
+    def run_tsne(self,bandwidth=1,kernel=None,*args,**kwargs):        
+        counts = self._determine_counts(bandwidth=bandwidth,kernel=kernel)
         tsne=TSNE(*args,**kwargs)
         self._tsne = tsne.fit_transform(counts)
 
-    def plot_umap(self, text_column=None, color_category='g', color_dict=None, c=None, **kwargs):
-        self.plot_embedding(self.umap, text_column=text_column, color_category=color_category, color_dict=color_dict, c=c, **kwargs)
+    def plot_umap(self, text_prop=None, color_prop='genes', color_dict=None, c=None,text_distance=1, thlds_text=(1.0,0.0,None),text_kwargs={}, **kwargs):
+        self.plot_embedding(self.umap, text_prop=text_prop, color_prop=color_prop, color_dict=color_dict, 
+        c=c,text_distance=text_distance, thlds_text=thlds_text, text_kwargs=text_kwargs, **kwargs)
 
-    def plot_tsne(self,text_column=None, color_category='g', color_dict=None, c=None, **kwargs):
-        self.plot_embedding(self.tsne, text_column=text_column, color_category=color_category, color_dict=color_dict, c=c, **kwargs)
+    # def plot_tsne(self,text_prop=None, color_prop='genes', color_dict=None, c=None,text_distance=1, **kwargs):
+    #     self.plot_embedding(self.tsne, text_prop=text_prop, color_prop=color_prop, color_dict=color_dict, c=c,text_distance=text_distance, **kwargs)
 
-    def plot_embedding(self, embedding, text_column=None, color_category='g', color_dict=None, c=None, **kwargs):
+    def plot_embedding(self, embedding, color_prop='genes', text_prop=None, 
+                    text_color_prop = None, c=None, color=None, color_dict=None,text_distance=1, thlds_text=(1.0,0.0,None), text_kwargs={}, **kwargs):
 
-        categories = self.df[color_category].unique() 
+        categories = self.df.props[color_prop].unique() 
 
-        if (color_dict is None):
-            cmap = get_cmap('nipy_spectral')
-            color_dict = {categories[i]:cmap(f) for i,f in enumerate(np.linspace(0,1,len(categories)))}
+        # if (color_dict is None):
+        #     cmap = get_cmap('nipy_spectral')
+        #     color_dict = {categories[i]:cmap(f) for i,f in enumerate(np.linspace(0.07,1,len(categories)))}
 
-        colors = [color_dict[c] for c in self.df[color_category]]
-        handlers = [plt.scatter([],[],color=color_dict[c]) for c in color_dict]
+        # colors = [color_dict[c] for c in self.df[color_category]]
 
+        # print(categories)
+        colors = self.df.props.project('c_'+color_prop)
+        handlers = [plt.scatter([],[],color=self.df.props[self.df.props[color_prop]==c]['c_'+color_prop][0]) for c in categories]
+
+        if color is not None:
+            colors=(color,)*len(self.df)
         if c is not None:
             colors=c
-        plt.legend(handlers, color_dict.keys())
+
+        plt.legend(handlers, categories)
 
         plt.scatter(*embedding.T,c=colors, **kwargs)
 
-        if text_column is not None:
-            cog_dict = self._determine_cog(embedding,text_column)
-            unique_texts = list(cog_dict.keys())
-            cogs = np.array(list(cog_dict.values()))
-            cogs = self._untangle_text(cogs,min_distance=0.9)
 
-            for i,g in enumerate(unique_texts):
-                x = cogs[i][0]
-                y = cogs[i][1]
-                txt = plt.text(x,y,g,size=13,ha='center',weight='bold',color='w')
-                # txt = plt.text(x,y,g,size=13,ha='center',color=color ,weight='bold')
 
-                txt.set_path_effects([PathEffects.withStroke(linewidth=2, foreground='k')])
+        if text_prop is not None:
 
-    
+            text_xs=[]
+            text_ys=[]
+            text_cs=[]
+            text_is=[]
+            text_zs=[]
 
-    def _determine_cog(self, embedding, column_name):
+            X, Y = np.mgrid[embedding[:,0].min():embedding[:,0].max():100j, 
+                embedding[:,1].min():embedding[:,1].max():100j]
+            positions = np.vstack([X.ravel(), Y.ravel()])
 
-        unique_texts = self.df[column_name].unique()
-        codes = self.df[column_name].cat.codes
+           
+            for i,g in enumerate(self.df.props[text_prop].unique()):
+                if text_color_prop is not None:
+                    fontcolor = self.df.props[self.df.props[text_prop]==g]['c_'+text_color_prop][0]
+                else: fontcolor='w'
 
-        knn = NearestNeighbors(n_neighbors=50)
-        knn.fit(embedding)
-        distances,neighbors = knn.kneighbors(embedding)
-        neighbor_types = np.array(codes)[neighbors]
-        cogs = []
+                # try:
+                embedding_subset = embedding[self.df.g.isin(self.df.props[self.df.props[text_prop]==g].index)].T
+                if embedding_subset.shape[1]>2:
+                    kernel = scipy.stats.gaussian_kde(embedding_subset)
 
-        for i in range(len(unique_texts)):
-            nt_filtered = 1/(1+distances)
-            nt_filtered[(neighbor_types[:,0]!=i)]=0
-            nt_filtered[(neighbor_types!=i)]=0
-            gravity = nt_filtered
-            gravity = gravity.sum(1)
-            cog = gravity.argmax()
-            cogs.append(embedding[cog])
+                    Z = np.reshape(kernel(positions).T, X.shape)
+                    localmaxs = scipy.ndimage.maximum_filter(Z,size=(10,10))
+                    maxz = (localmaxs==Z)&(localmaxs>=(localmaxs.max()*thlds_text[0]))
+                    maxs = np.where(maxz)
+                    # maxz = Z.max()
+                    maxx = X[:,0][maxs[0]]
+                    maxy = Y[0][maxs[1]]
+                
+                    for j in range(len(maxx)):
+                        plt.suptitle(maxx[j])
+                        text_xs.append(maxx[j])
+                        text_ys.append(maxy[j])
+                        text_is.append(g)
+                        text_cs.append(fontcolor)
+                        text_zs.append(Z[maxs[0][j],maxs[1][j]])
 
-        return {self.df[column_name].cat.categories[i]: c for i,c in enumerate(cogs)}
+            cogs = self._untangle_text(np.array([text_xs,text_ys,]).T, min_distance=text_distance)
+            for i,c in enumerate(cogs):
+                # plt.suptitle(self.df.counts[text_is[i]])
+                if (text_zs[i]>(max(text_zs)*thlds_text[1])):
+                    if (thlds_text[2] is not None) and (self.df.counts[text_is[i]]>thlds_text[2]):
+                        txt = plt.text(c[0],c[1],text_is[i],color=text_cs[i],ha='center',**text_kwargs)
+                        txt.set_path_effects([PathEffects.withStroke(linewidth=3, foreground='k')])
+
+                # except:
+                #     print(f'Failed to assign text label to {g}')
+
+
  
     def _untangle_text(self, cogs, untangle_rounds=50, min_distance=0.5):
         knn = NearestNeighbors(n_neighbors=2)
 
-        cogs_new = cogs.copy()
+        np.random.seed(42)
+        cogs_new = cogs+np.random.normal(size=cogs.shape,)*0.01
 
         for i in range(untangle_rounds):
 
@@ -494,7 +453,7 @@ class SpatialGraph():
             knn = NearestNeighbors(n_neighbors=2)
 
             knn.fit(cogs)
-            distances,neighbors = knn.kneighbors(cogs)
+            distances,neighbors = knn.kneighbors(cogs/[1.01,1.0])
             too_close = (distances[:,1]<min_distance)
 
             for i,c in enumerate(np.where(too_close)[0]):
@@ -659,38 +618,9 @@ class ScanpyDataFrame():
         counts_2 = np.array(samples_2.X.mean(0)).flatten()
 
         return np.log((counts_1+0.1)/(counts_2+0.1))
-
         
-        clrs = np.zeros((len(self.sd),))
-    
-        for g in self.sd.genes:
-    #         if g in adata.var.index:
-            clrs[self.sd.g==g]=ratios[samples_1.var.index==g]
-                
-    #     extreme = np.max((ratios.max(),-ratios.min()))
-        
-    #     fig = plt.figure(figsize=(70,70))
-    # #     fig = plt.figure(figsize=(100,100))
-        
-    #     ax = plt.subplot(111)
-    # #     ax.imshow(1-(fitc[0:-1:5,0:-1:5].sum(-1).T**0.1),cmap='Greys')
-    #     sdata.background.imshow(cmap='Greys')
-    #     cax = ax.scatter(sdata.x,sdata.y,c=clrs,cmap='seismic',alpha=0.6, vmin=-extreme,vmax=extreme)
-
-    #     ax.set_title('differential mRNA <-> celltype mappings: '+filename, fontsize=90)
-
-    #     # Add colorbar, make sure to specify tick locations to match desired ticklabels
-    #     cbar = fig.colorbar(cax, ticks=[extreme, -extreme])
-    #     cbar.ax.set_yticklabels(['\n'.join(labels0),'\n'.join(labels1),],fontsize=60)
-        
-    #     handlers = [plt.scatter([],[],color='k') for f in (meta.columns)]
-    #     plt.legend(handlers,[f"{idx}:{meta[idx].values[0]}" for i,idx in enumerate(meta.columns)],
-    #             prop={'size': 60},loc='upper left')                              
                                 
-
-
-        return None
-
+                                
 class GeneStatistics(pd.DataFrame):
     def __init__(self, *args,**kwargs):
         super(GeneStatistics, self).__init__(*args,**kwargs)
@@ -821,6 +751,53 @@ class SpatialIndexer():
 
         return self.crop(xlims, ylims)
 
+class PropsDF(pd.DataFrame):
+
+    def __init__(self, sd, assign_colors=True):
+        super(PropsDF,self).__init__(index=sd.stats.index)
+        self['genes']=self.index
+        if assign_colors:
+            self.assign_colors()
+        self.sd=sd
+
+    def assign_colors(self,label='genes',cmap=None, shuffle=False):
+
+        # if label is None:
+        #     uniques = self.index
+        # else:
+        uniques = self[label].unique()
+
+        if cmap is None:
+            cmap = get_cmap('nipy_spectral')    
+            clrs = [cmap(f) for f in np.linspace(0.07,1,len(uniques))]
+        
+        else:
+            cmap = get_cmap(cmap)    
+            clrs = [cmap(f) for f in np.linspace(0,1,len(uniques))]
+        
+        if shuffle:
+            random.shuffle(clrs)
+
+        clrs = {u:clrs[i] for i,u in enumerate(uniques)}
+        self['c_'+label] = self[label].apply(lambda x: clrs[x])
+        # print(len(uniques),len(clrs),self.shape)
+        # if label is None:
+        #     self['c_genes']=clrs
+        # else:
+        # clr_list=[(0,0,0,0,)]*len(self)
+        # for i,u in enumerate(uniques):
+            # print([clrs[i]]*sum(self[label]==u))
+            
+            # self.loc[self[label]==u,'c_'+label]=[[clrs[i]]]*sum(self[label]==u)
+        # self[]
+        
+
+    def project(self,label):
+        return(self.loc[self.sd.g][label])
+
+    def copy(self):
+        return PropsDF(self.sd)
+
 class SpatialData(pd.DataFrame):
 
     def __init__(self,  
@@ -829,7 +806,8 @@ class SpatialData(pd.DataFrame):
                  y_coordinates,
                  pixel_maps=[],
                  scanpy=None,
-                 synchronize=True):
+                 synchronize=True,
+                 props=None):
 
         # Initiate 'own' spot data:
         super(SpatialData, self).__init__({
@@ -843,6 +821,11 @@ class SpatialData(pd.DataFrame):
         # Initiate pixel maps:
         self.pixel_maps = []
         self.stats = PointStatistics(self)
+
+        if props is None:
+            self.props = PropsDF(self)
+        else:
+            self.props= props
 
         self.graph = SpatialGraph(self)
 
@@ -938,6 +921,7 @@ class SpatialData(pd.DataFrame):
                 # print(arg[0].values)
                 new_data = super().iloc.__getitem__(arg[0].values)
 
+
             elif isinstance(arg[0], np.ndarray):
                 new_data = super().iloc.__getitem__(arg[0])
 
@@ -958,8 +942,17 @@ class SpatialData(pd.DataFrame):
                                     new_data.y,
                                     self.pixel_maps,
                                     scanpy=scanpy,
-                                    synchronize=synchronize)
-            # new_frame.update_stats()
+                                    synchronize=synchronize,
+                                    props=self.props.copy())
+
+            new_prop_entries=self.props.loc[new_frame.genes]
+            new_frame.props[new_prop_entries.columns]=new_prop_entries
+            new_frame.props.sd = new_frame
+            new_frame.props.drop(self.genes.symmetric_difference(new_frame.genes) ,inplace=True)
+
+            if self.graph._umap is not None:
+                new_frame.graph._umap = self.graph._umap[self.index.isin(new_frame.index)]
+                
             return (new_frame)
 
         print('Reverting to generic Pandas.')
@@ -989,23 +982,29 @@ class SpatialData(pd.DataFrame):
                 axd=None,
                 plot_bg=True,
                 cmap='jet',
+                scalebar=True,
                 **kwargs):
 
         if axd is None:
-            axd = plt.subplot(111)
+            axd = plt.gca()
 
         if self.background and plot_bg:
             self.background.imshow(cmap='Greys', axd=axd)
 
         if c is None and color is None:
-            c = self.gene_ids
+            c = self.props.project('c_genes')
+            clrs=self.props.loc[self.genes].c_genes 
+        else:
+            cmap = get_cmap(cmap)    
+            clrs = [cmap(f) for f in np.linspace(0,1,len(self.genes))]
 
-        cmap = get_cmap(cmap)    
-
-        clrs = [cmap(f) for f in np.linspace(0,1,len(self.genes))]
-        handles = [plt.scatter([],[],color=c) for c in clrs]
+        
         if legend:
+            handles = [plt.scatter([],[],color=c) for c in clrs]
             plt.legend(handles,self.genes)
+
+        if scalebar:
+            self.add_scalebar(axd=axd)
 
         # axd.set_title(gene)
         axd.scatter(self.x,
@@ -1014,6 +1013,41 @@ class SpatialData(pd.DataFrame):
                     color=color,
                     cmap=cmap,
                     **kwargs)
+        return axd
+
+    def add_scalebar(self, length=None, unit=r'$\mu$m',axd=None, color='w'):
+
+        if axd is None:
+            axd=plt.gca()
+        
+        x_,_x = axd.get_xlim()
+        y_,_y = axd.get_ylim()
+
+        if length is None:
+            length = (_x-x_)*0.4
+            decimals = np.ceil(np.log10(length))-1
+            inter = length/10**decimals
+            length = np.ceil(inter) * 10**decimals #int(np.around(_x-x_,1-int(np.log10((_x-x_)/2))))
+        
+        _x_ = _x-x_
+        _y_ = _y-y_
+
+        new_x_ = x_ + _x_/20
+        new__x =  new_x_+length
+        new_y = y_ + _y_/20
+
+        scbar = plt.Line2D([0.1,0.9],[0.5,0.5],c='w', marker='|',linewidth=2,
+            markeredgewidth=3,markersize=10,color=color)
+        scbar.set_data([new_x_,new__x],[new_y,new_y])
+        scbar.set_path_effects([PathEffects.withStroke(linewidth=4, foreground='k')])
+
+        sctxt = axd.text((new_x_+new__x)/2, (y_+_y_/15),f'{int(length)}μm', fontweight='bold', ha='center',color=color )
+
+        axd.add_artist(scbar)
+        sctxt.set_path_effects([PathEffects.withStroke(linewidth=3, foreground='k')])
+
+        return scbar, sctxt
+
 
     def plot_bars(self, axis=None, **kwargs):
         if axis is None:
@@ -1031,7 +1065,7 @@ class SpatialData(pd.DataFrame):
         axis.set_ylabel('molecule count')
 
     def plot_overview(self):
-        plt.style.use('dark_background')
+        
         colors = ('royalblue', 'goldenrod', 'red', 'lime')
 
         scatter_idcs = np.round(np.linspace(0,
@@ -1151,14 +1185,7 @@ class SpatialData(pd.DataFrame):
                 pptx.append(rotated_spots[0][mask])
                 ppty.append(rotated_spots[1][mask])
                 clrs.append(self.gene_ids.iloc[n][mask])
-                # intensity.append(1 / distances_filtered[i_neighbor])
-
-                # mask = (pptx[-1] >= -50) & (pptx[-1] < 50) & (
-                #     ppty[-1] >= -50) & (ppty[-1] < 50)
-                # out[ppty[-1].astype(int)[mask], pptx[-1].astype(int)[mask],
-                #     clrs[-1][mask]] += 1  # intensity[-1][mask]
-
-        #         break
+                
 
         pptx = np.concatenate(pptx)
         ppty = np.concatenate(ppty)
@@ -1177,17 +1204,6 @@ class SpatialData(pd.DataFrame):
         plt.axvline(0)
         plt.scatter(pptt, pptr, c=clrs, cmap='nipy_spectral', alpha=0.1, s=3)
 
-        # out[(pptr/pptr.max()*29).astype(int),(pptt/np.pi*2*29).astype(int),clrs]+=1
-        # for u in np.unique(clrs):
-        #     plt.scatter(pptx[clrs == u], ppty[clrs == u], alpha=0.1)
-        # plt.scatter(
-        #     0,
-        #     0,
-        #     color='lime',
-        #     s=70,
-        # )
-
-        # intensity = np.concatenate(intensity)
         return (pptt, pptr, clrs,)
 
     def knn_clean(
@@ -1257,48 +1273,49 @@ def create_colorarray(sdata,values,cmap=None):
 
 
 
-def determine_text_coords(embedding, sdata,untangle_rounds=10, min_distance=0.5):
-    knn = NearestNeighbors(n_neighbors=50)
-    knn.fit(embedding)
-    distances,neighbors = knn.kneighbors(embedding)
-    neighbor_types = np.array(sdata.gene_ids)[neighbors]
-    cogs = []
+# def determine_text_coords(embedding, sdata,untangle_rounds=10, min_distance=0.5):
+#     knn = NearestNeighbors(n_neighbors=50)
+#     knn.fit(embedding)
+#     distances,neighbors = knn.kneighbors(embedding)
+#     neighbor_types = np.array(sdata.gene_ids)[neighbors]
+#     cogs = []
 
-    for i in range(len(sdata.stats)):
-        nt_filtered = 1/(1+distances)
-        nt_filtered[(neighbor_types[:,0]!=i)]=0
-        nt_filtered[(neighbor_types!=i)]=0
-        gravity = nt_filtered
+#     for i in range(len(sdata.stats)):
+#         nt_filtered = 1/(1+distances)
+#         nt_filtered[(neighbor_types[:,0]!=i)]=0
+#         nt_filtered[(neighbor_types!=i)]=0
+#         gravity = nt_filtered
         
-        gravity = gravity.sum(1)
-        cog = gravity.argmax()
-        cogs.append(embedding[cog])
+#         gravity = gravity.sum(1)
+#         cog = gravity.argmax()
+#         cogs.append(embedding[cog])
 
-    cogs = np.array(cogs)
+#     cogs = np.array(cogs)
 
-    knn = NearestNeighbors(n_neighbors=2)
+#     knn = NearestNeighbors(n_neighbors=2)
     
-    cogs_new = cogs.copy()
+#     cogs_new = cogs.copy()
 
-    for i in range(untangle_rounds):
+#     for i in range(untangle_rounds):
 
-        cogs = cogs_new.copy()
-        knn = NearestNeighbors(n_neighbors=2)
+#         cogs = cogs_new.copy()
+#         knn = NearestNeighbors(n_neighbors=2)
 
-        knn.fit(cogs)
-        distances,neighbors = knn.kneighbors(cogs)
-        too_close = (distances[:,1]<min_distance)
+#         knn.fit(cogs)
+#         distances,neighbors = knn.kneighbors(cogs)
+#         too_close = (distances[:,1]<min_distance)
 
-        for i,c in enumerate(np.where(too_close)[0]):
-            partner = neighbors[c,1]
-            cog = cogs[c]-cogs[partner]
-            cog_new = cogs[c]+0.3*cog
-            cogs_new[c]= cog_new
+#         for i,c in enumerate(np.where(too_close)[0]):
+#             partner = neighbors[c,1]
+#             cog = cogs[c]-cogs[partner]
+#             cog_new = cogs[c]+0.3*cog
+#             cogs_new[c]= cog_new
             
-    return cogs_new
+#     return cogs_new
 
 
-def hbar_compare(stat1,stat2,labels=None,text_display_threshold=0.02):
+def hbar_compare(stat1,stat2,labels=None,text_display_threshold=0.02,c=None):
+
 
     genes_united=sorted(list(set(np.concatenate([stat1.index,stat2.index]))))[::-1]
     counts_1=[0]+[stat1.loc[i].counts if i in stat1.index else 0 for i in genes_united]
@@ -1306,12 +1323,15 @@ def hbar_compare(stat1,stat2,labels=None,text_display_threshold=0.02):
     cum1 = np.cumsum(counts_1)/sum(counts_1)
     cum2 = np.cumsum(counts_2)/sum(counts_2)
 
+    if c is None:
+        c = [None]*len(cum1)
+
     for i in range(1,len(cum1)):
 
         bars = plt.bar([0,1],[cum1[i]-cum1[i-1],cum2[i]-cum2[i-1]],
-                bottom=[cum1[i-1],cum2[i-1],], width=0.4)
+                bottom=[cum1[i-1],cum2[i-1],], width=0.4,color=c[i-1])
         clr=bars.get_children()[0].get_facecolor()
-        plt.plot((0.2,0.8),(cum1[i],cum2[i]),c='grey')
+        plt.plot((0.2,0.8),(cum1[i],cum2[i]),c='k')
         plt.fill_between((0.2,0.8),(cum1[i],cum2[i]),(cum1[i-1],cum2[i-1]),color=clr,alpha=0.2)
         
         if (counts_1[i]/sum(counts_1)>text_display_threshold) or \
@@ -1321,6 +1341,46 @@ def hbar_compare(stat1,stat2,labels=None,text_display_threshold=0.02):
 
     if labels is not None:
         plt.xticks((0,1),labels) 
+
+def sorted_bar_compare(stat1,stat2,kwargs1={},kwargs2={}):
+    categories_1 = (stat1.index)
+    counts_1 = (np.array(stat1.counts).flatten())
+    counts_1_idcs = np.argsort(counts_1)
+    # count_ratios = np.log(self.determine_gains())
+    # count_ratios -= count_ratios.min()
+    # count_ratios /= count_ratios.max()
+
+    ax1 = plt.subplot(311)
+    ax1.set_title('compared molecule counts:')
+    ax1.bar(np.arange(len(counts_1)), counts_1[counts_1_idcs], color='grey',**kwargs1)
+    # ax1.set_ylabel('log(count) scRNAseq')
+    ax1.set_xticks(np.arange(len(categories_1)),
+                categories_1[counts_1_idcs],
+                rotation=90)
+    ax1.set_yscale('log')
+
+    ax2 = plt.subplot(312)
+    for i, gene in enumerate(categories_1[counts_1_idcs]):
+        if gene in stat2.index:
+            plt.plot(
+                [i, stat2.count_ranks[gene]],
+                [1, 0],
+            )
+    plt.axis('off')
+    ax2.set_ylabel(' ')
+
+    ax3 = plt.subplot(313)
+    ax3.bar(np.arange(len(stat2)), stat2.counts[stat2.count_indices], color='grey',**kwargs2)
+
+    ax3.set_xticks(np.arange(len(stat2.index)),
+                stat2.index[stat2.count_indices],
+                rotation=90)
+    ax3.set_yscale('log')
+    ax3.invert_yaxis()
+    ax3.xaxis.tick_top()
+    ax3.xaxis.set_label_position('top')
+    # ax3.set_ylabel('log(count) spatial')
+    return(ax1,ax2,ax3)
 
         
 # def determine_gains(sc, spatial):

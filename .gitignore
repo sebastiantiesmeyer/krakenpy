@@ -127,3 +127,16 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# data folder
+./test/data/*
+./test/kraken.py
+test/data/HCAPancreas/colorMapCommas.csv
+test/data/CodeluppiosmFISH/colorMapCommas.csv
+test/data/CodeluppiosmFISH/colorMapDict.csv
+test/data/CodeluppiosmFISH/coordinates.csv
+test/data/CodeluppiosmFISH/signatures.csv
+test/data/HCAPancreas/colorMapDict.csv
+test/data/HCAPancreas/coordinates.csv
+test/data/HCAPancreas/signatures_original.csv
+test/kraken.py
